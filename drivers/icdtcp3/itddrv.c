@@ -233,18 +233,15 @@ static DEVICE_ATTR(test, S_IRUGO, itddev_test_show, NULL);
 
 static inline void timeval_offset_usec(struct timeval *tm, long offset_usec)
 {
- // assumption usec is between 0..1000000
- tm->tv_usec += offset_usec;
- if (tm->tv_usec >= USEC_PER_SEC)
- {
-   tm->tv_sec++;
-   tm->tv_usec -= USEC_PER_SEC;
- }
- else if (tm->tv_usec < 0)
- {
-   tm->tv_sec--;
-   tm->tv_usec += USEC_PER_SEC;
- }
+  long sign = (offset_usec < 0) ? -1 : 1;
+  long abs = (offset_usec < 0) ? -offset_usec : offset_usec;
+  tm->tv_sec += sign * (abs / USEC_PER_SEC);
+  tm->tv_usec += sign * (abs % USEC_PER_SEC);
+  if (tm->tv_usec < 0)
+  {
+    tm->tv_sec--;
+    tm->tv_usec += USEC_PER_SEC;
+  }
 }
 
 static int __itddev_queue_event(struct itddev *itd,
@@ -430,11 +427,9 @@ static int itddev_cdev_read(struct file *filp, __user char *buf, size_t count, l
 
     err = wait_event_interruptible(itd->queue_ready,
       atomic_read(&itd->queue_count) > 0);
+    CHECK(err != -ERESTARTSYS, err, -EINTR, fail, "Wait for queue interrupted");
     CHECK_ERR(err, fail, "Wait for queue ready failed");
-    if (err)
-      break;
   }
-
   return copied;
 
 fail:
