@@ -1,547 +1,270 @@
-//#include <linux/init.h>
+#include <linux/init.h>
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/gpio.h>
-
-#include "icdcommon.h"
-/*#include <linux/gpio.h>
-#include <linux/interrupt.h>
-
+#include <linux/platform_device.h>
 #include <linux/fs.h>
 #include <linux/cdev.h>
-
-
 #include <linux/uaccess.h>
 
-#define PHOTOCELL_CLEAR (0)
-#define PHOTOCELL_BLOCKED (1)
-#define PHOTOCELL_UNINITIALIZED (-1)
+#include <linux/hd44780drv.h>
+#include "icdcommon.h"
 
-#define PHOTOCELL_IOBUFF_SIZE (1024)
-
-struct photocell_device 
+struct hd44780dev
 {
+  struct platform_device *pdev;
   struct cdev cdev;
-  char *iobuf;
-  char *iobuf_ptr;
- 
-  struct timer_list timer;
-  struct tasklet_struct irq_tasklet;
   spinlock_t spinlock;
-  struct list_head queue;
-  atomic_t queue_count;
-  wait_queue_head_t queue_ready;
-  int state;
-  int timer_running;
-  unsigned long start_time;
-
-  int engage_delay;
-  int release_delay;
 };
 
-struct photocell_entry
-{
-  struct list_head list;
-  unsigned long start_time;
-  unsigned long end_time;
-};
+static int hd44780dev_init(struct hd44780dev *lcd,
+  struct platform_device *pdev, dev_t dev_nr);
+static void hd44780dev_free(struct hd44780dev *lcd);
+static int hd44780dev_cdev_open(struct inode *inode, struct file *filp);
+static ssize_t hd44780dev_cdev_write(struct file *filp,
+  const char __user *buf, size_t count, loff_t *offp);
+static int hd44780dev_cdev_release(struct inode *inode, struct file *filp);
+static ssize_t hd44780dev_cmd_store(struct device *dev,
+  struct device_attribute *attr, const char *buf, size_t count);
+static void __hd44780dev_write_4bit(struct hd44780dev *lcd, int rs, unsigned char d);
+static void __hd44780dev_write_char(struct hd44780dev *lcd, unsigned char d);
+static void __hd44780dev_write_cmd(struct hd44780dev *lcd, unsigned char d);
 
-static struct photocell_device *phc;
+static DEVICE_ATTR(cmd, S_IWUSR, NULL, hd44780dev_cmd_store);
 
-void photocell_timer_fn(unsigned long data)
-{
-  struct photocell_device *photocell = (struct photocell_device *)data;
-  struct photocell_entry *entry = NULL;
-
-  spin_lock_bh(&photocell->spinlock);
-  if (!photocell->timer_running)
-    goto unlock;
-
-  switch(photocell->state)
-  {
-    case PHOTOCELL_UNINITIALIZED:
-      photocell->state = PHOTOCELL_CLEAR;
-      printk(KERN_ALERT "TM: %lu, UNINITIALIZED -> CLEAR\n", jiffies);
-      gpio_set_value(AT91_PIN_PB0, 1);
-      break;
-
-    case PHOTOCELL_CLEAR:
-      photocell->state = PHOTOCELL_BLOCKED;
-      photocell->start_time = jiffies - photocell->engage_delay;
-      printk(KERN_ALERT "TM: %lu, CLEAR -> BLOCKED\n", jiffies);
-      gpio_set_value(AT91_PIN_PB0, 0);
-      break;
-
-    case PHOTOCELL_BLOCKED:
-      photocell->state = PHOTOCELL_CLEAR;
-      printk(KERN_ALERT "TM: %lu, BLOCKED -> CLEAR\n", jiffies);
-      // queue photocell event & wake up waiting processes
-      entry = kmalloc(sizeof(struct photocell_entry), GFP_ATOMIC);
-      if (entry == NULL)
-        printk(KERN_ALERT "kmalloc failed\n");
-      if (entry)
-      {
-        entry->start_time = photocell->start_time;
-        entry->end_time = jiffies - photocell->release_delay;
-        list_add_tail(&entry->list, &photocell->queue);
-       
-        printk(KERN_ALERT "TM: Queued: dt=%lu\n",
-          entry->end_time - entry->start_time);
-
-        atomic_inc(&photocell->queue_count);
-        wake_up_interruptible(&photocell->queue_ready);
-      }
-      gpio_set_value(AT91_PIN_PB0, 1);
-      break;
-
-    default:
-      printk(KERN_ALERT "TM: %lu, Error! Invalid value of state! ? -> UNINITIALIZED\n", jiffies);
-      photocell->state = PHOTOCELL_UNINITIALIZED;
-  }
-
-  photocell->timer_running = 0;
-
-unlock:
-  spin_unlock_bh(&photocell->spinlock);
-}
-
-void photocell_irq_tasklet_fn(unsigned long data)
-{
-  struct photocell_device *photocell = (struct photocell_device *)data;
-  unsigned long delay;
-//  unsigned int gpio_nr1 = AT91_PIN_PB0;
-  unsigned int gpio_nr2 = AT91_PIN_PB2;
-  int gpio = 0;
-
-  gpio = gpio_get_value(gpio_nr2) ? 0 : 1; // Hardcoded reversion for now
-//  gpio_set_value(gpio_nr1, gpio);
-
-  // state gpio action
-  // -1     0    (re)start timer
-  // -1     1    cancel timer if running
-  //  0     0    cancel timer if running
-  //  0     1    (re)start timer
-  //  1     0    (re)start timer
-  //  1     1    cancel timer if running
-
-  spin_lock_bh(&photocell->spinlock);
-
-  if ((photocell->state == PHOTOCELL_UNINITIALIZED && !gpio)
-    || (photocell->state == PHOTOCELL_CLEAR && gpio)
-    || (photocell->state == PHOTOCELL_BLOCKED && !gpio))
-  {
-    delay = gpio ? photocell->engage_delay : photocell->release_delay;
-    mod_timer(&photocell->timer, jiffies + delay);
-    photocell->timer_running = 1;
-    printk(KERN_ALERT "IRQ: gpio=%u, jiffies=%lu TIMER (RE)STARTED\n", gpio, jiffies);
-  }
-  else
-  {
-    photocell->timer_running = 0;
-    del_timer(&photocell->timer);
-    printk(KERN_ALERT "IRQ: gpio=%u, jiffies=%lu TIMER CANCELED\n", gpio, jiffies);
-  }
-
-  spin_unlock_bh(&photocell->spinlock);
-}
-
-
-irqreturn_t photocell_irq_handler(int irq, void *dev)
-{
-  struct photocell_device *photocell = (struct photocell_device *)dev;
-  tasklet_schedule(&photocell->irq_tasklet);
-  return IRQ_HANDLED;
-}
-
-static int phc_cdev_open(struct inode *inode, struct file *filp)
-{
-  struct photocell_device *photocell = (struct photocell_device *)
-    container_of(inode->i_cdev, struct photocell_device, cdev);
-  filp->private_data = photocell;
-  return 0;
-}
-
-static int phc_cdev_read(struct file *filp, __user char *buf, size_t count, loff_t *offp)
-{
-  int err = 0;
-  struct photocell_device *dev = (struct photocell_device *)filp->private_data;
-  struct photocell_entry* entry = NULL;
-  size_t copied = 0;
-  size_t len = 0;
-  unsigned long res = 0;
-
-  // In case some data has left in the buffer from previous read operation
-  if (dev->iobuf_ptr != 0 && dev->iobuf_ptr[0] != 0)
-  {
-    len = min(count - copied, strlen(dev->iobuf_ptr));
-    res = copy_to_user(buf + copied, dev->iobuf_ptr, len);
-    //ICD2_CHECK(res == 0);
-    dev->iobuf_ptr += len;
-    copied += len;
-  }
-
-  while(copied < count)
-  {
-    while (atomic_read(&dev->queue_count) > 0)
-    {
-      spin_lock_bh(&dev->spinlock);
-
-      atomic_dec(&dev->queue_count);
-      //ICD2_CHECK(!list_empty(&photocell->queue));
-      entry = list_first_entry(&dev->queue, struct photocell_entry, list);
-      snprintf(dev->iobuf, PHOTOCELL_IOBUFF_SIZE, "%lu %lu\n",
-        entry->start_time, entry->end_time);
-      list_del(&entry->list);
-      kfree(entry);
-
-      spin_unlock_bh(&dev->spinlock);
-
-      len = min(count - copied, strlen(dev->iobuf));
-      res = copy_to_user(buf + copied, dev->iobuf, len);
-      //ICD2_CHECK(res == 0);
-      dev->iobuf_ptr = dev->iobuf + len;
-      copied += len;
-
-      if (copied == count)
-        break;
-    }
-
-    if (copied > 0)
-      break;
-
-    err = wait_event_interruptible(dev->queue_ready,
-      atomic_read(&dev->queue_count) > 0);
-    //ICD2_CHECK_ERR()
-    if (err)
-      break;
-  }
-
-  return copied;
-}
-
-static int phc_cdev_release(struct inode *inode, struct file *filp)
-{
-  return 0;
-}
-
-const struct file_operations phc_cdev_operations = {
+static const struct file_operations hd44780dev_cdev_operations = {
   .owner = THIS_MODULE,
-  .open = phc_cdev_open,
+  .open = hd44780dev_cdev_open,
   .llseek = no_llseek,
-  .read = phc_cdev_read,
-  .release = phc_cdev_release,
+  .write = hd44780dev_cdev_write,
+  .release = hd44780dev_cdev_release,
 };
 
-
-static int init_phc_devices(void)
+struct hd44780drv
 {
-  int err;
-  dev_t dev;
-
-  err = alloc_chrdev_region(&dev, 0, 1, "photocell");
-  if (err)
-  {
-    printk(KERN_ALERT "alloc_chrdev_region failed!\n");
-    return err;
-  }
-
-  phc = kzalloc(sizeof(struct photocell_device), GFP_KERNEL);
-  if (!phc)
-    return -ENOMEM;
-  
-  phc->iobuf = kmalloc(PHOTOCELL_IOBUFF_SIZE, GFP_KERNEL);
-  if (!phc->iobuf)
-  {
-    kfree(phc);
-    return -ENOMEM;
-  }
-  phc->iobuf[0] = 0;
-  phc->iobuf_ptr = phc->iobuf;
-
-  cdev_init(&phc->cdev, &phc_cdev_operations);
-  phc->cdev.owner = THIS_MODULE;
-
-  err = cdev_add(&phc->cdev, dev, 1);
-  if (err)
-  {
-    printk(KERN_ALERT "cdev_add failed!\n");
-    return err;
-  }
-
-  printk(KERN_ALERT "HZ=%d\n", HZ);
-
-  phc->state = PHOTOCELL_UNINITIALIZED;
-  phc->timer_running = 0;
-  phc->start_time = 0;
-  phc->engage_delay = 200;
-  phc->release_delay = 200;
-  INIT_LIST_HEAD(&phc->queue);
-  atomic_set(&phc->queue_count, 0);
-  init_waitqueue_head(&phc->queue_ready);
-  spin_lock_init(&phc->spinlock);
-  tasklet_init(&phc->irq_tasklet, photocell_irq_tasklet_fn, (unsigned long)phc);
-  init_timer(&phc->timer);
-  phc->timer.data = (unsigned long)phc;
-  phc->timer.function = photocell_timer_fn;
-
-  tasklet_schedule(&phc->irq_tasklet);
-
-  return 0;
-}
-
-static void free_phc_devices(void)
-{
-  cdev_del(&phc->cdev);
-  kfree(phc->iobuf);
-  kfree(phc);
-  unregister_chrdev_region(phc->cdev.dev, 1);
-}
-*/
-#define NUM_OF_GPIO (6)
-
-#define LCD_RS (AT91_PIN_PB20)
-#define LCD_E  (AT91_PIN_PB21)
-#define LCD_D4 (AT91_PIN_PA6)
-#define LCD_D5 (AT91_PIN_PA30)
-#define LCD_D6 (AT91_PIN_PA9)
-#define LCD_D7 (AT91_PIN_PA23)
-
-#define TT (100)
-
-struct lcd_gpio_descr
-{
-  unsigned int gpio;
-  const char *name;
+  dev_t base_dev_number;
+  struct platform_driver driver;
 };
 
-struct lcd_gpio_descr lcd_gpios[] = {
-  { LCD_RS, "ICD-LCD-RS" },
-  { LCD_D4, "ICD-LCD-D4" },
-  { LCD_D5, "ICD-LCD-D5" },
-  { LCD_D6, "ICD-LCD-D6" },
-  { LCD_D7, "ICD-LCD-D7" },
-  { LCD_E, "ICD-LCD-E" },
+static int __init hd44780drv_init(void);
+static void __exit hd44780drv_exit(void);
+static int __devinit hd44780drv_probe(struct platform_device *pdev);
+static int __devexit hd44780drv_remove(struct platform_device *pdev);
+
+static struct hd44780drv lcd_driver = {
+  .driver = {
+    .probe = hd44780drv_probe,
+    .remove = __devexit_p(hd44780drv_remove),
+    .driver = {
+      .name =  "gpio-hd44780",
+      .owner = THIS_MODULE,
+    }
+  }
 };
 
-void hd44780_write_4bit(unsigned char d)
-{
-  int d4 = d & 0x01;
-  int d5 = (d >> 1) & 0x01;
-  int d6 = (d >> 2) & 0x01;
-  int d7 = (d >> 3) & 0x01;
+//------------------------------------------------------------------------------
 
-  DBG_TRACE("d7-4=%i %i %i %i", d7, d6, d5, d4);
-
-  gpio_set_value(LCD_D4, d4);//d & 0x01);
-  gpio_set_value(LCD_D5, d5);//(d >> 1) & 0x01);
-  gpio_set_value(LCD_D6, d6);//(d >> 2) & 0x01);
-  gpio_set_value(LCD_D7, d7);//(d >> 3) & 0x01);
-
-  //udelay(10);
-  //ndelay(60);
-  mdelay(TT);
-  gpio_set_value(LCD_E, 1);
-//  udelay(10);
-  mdelay(TT);
-  //ndelay(450);
-  gpio_set_value(LCD_E, 0);
-  mdelay(TT);
-}
-
-void hd44780_write_char(unsigned char d)
-{
-  gpio_set_value(LCD_RS, 1);
-  hd44780_write_4bit(d >> 4);
-  hd44780_write_4bit(d);
-}
-
-void hd44780_write_cmd(unsigned char d)
-{
-  gpio_set_value(LCD_RS, 0);
-  hd44780_write_4bit(d >> 4);
-  hd44780_write_4bit(d);
-}
-
-void hd44780_init(void)
-{
-//  mdelay(20); 
-  // Basic init sequence 
-  gpio_set_value(LCD_RS, 0);
-  hd44780_write_4bit(0x3);
-//  mdelay(5); 
-  hd44780_write_4bit(0x3);
-//  udelay(200);
-  hd44780_write_4bit(0x3);
-//  udelay(200);
-
-  // Set to 4 bit mode
-  gpio_set_value(LCD_RS, 0);
-  hd44780_write_4bit(0x2);
-//  mdelay(5); 
-
-  // Function set; 2 lines, 5x7 dot format
-//  hd44780_write_cmd(0x28);
-//  mdelay(5); 
-  //udelay(50);
-
-  // Display off
-  hd44780_write_cmd(0x08);
-//  mdelay(5); 
-  //udelay(50);
-
-  // Display clear
-  hd44780_write_cmd(0x01);
-  //udelay(1700);
-//  mdelay(5); 
-  //mdelay(20); 
-
-  // Entry mode; increment, display shift off
-  hd44780_write_cmd(0x06);
-//  mdelay(5); 
-  //udelay(50);
-}
-
-static int __init lcd_init(void)
+static int hd44780dev_init(struct hd44780dev *lcd, struct platform_device *pdev, dev_t dev_nr)
 {
   int err = 0;
-  int count = 0; // Number of successfully allocated gpios
-  int i = 0;
 
-  for (i = 0; i < NUM_OF_GPIO; i++)
-  {
-    err = gpio_request(lcd_gpios[i].gpio, lcd_gpios[i].name);
-    CHECK_ERR(err, fail, "requesting '%s' gpio failed", lcd_gpios[i].name);
-    count++;
+  lcd->pdev = pdev;
 
-    err = gpio_direction_output(lcd_gpios[i].gpio, 0);
-    CHECK_ERR(err, fail, "setting direction of %s gpio to output failed",
-      lcd_gpios[i].name);
+  cdev_init(&lcd->cdev, &hd44780dev_cdev_operations);
+  lcd->cdev.owner = THIS_MODULE;
+  err = cdev_add(&lcd->cdev, dev_nr, 1);
+  CHECK_ERR(err, fail, "Adding character device for %s failed", pdev->name);
 
-    mdelay(TT);
-  }
+  spin_lock_init(&lcd->spinlock);
 
-//  DBG_TRACE("10sec delay START");
-//  mdelay(10000);
-//  DBG_TRACE("10sec delay OVER");
+  err = device_create_file(&pdev->dev, &dev_attr_cmd);
+  CHECK_ERR(err, fail_free_cdev, "Failed to register device attribute 'cmd'");
 
-  hd44780_init();
+  // Basic init sequence 
+  __hd44780dev_write_4bit(lcd, 0, 0x3);
+  mdelay(5); 
+  __hd44780dev_write_4bit(lcd, 0, 0x3);
+  udelay(200);
+  __hd44780dev_write_4bit(lcd, 0, 0x3);
+  udelay(50);
+  // Set to 4 bit mode
+  __hd44780dev_write_4bit(lcd, 0, 0x2);
+  udelay(50); 
+  // Function set; 2 lines, 5x7 dot format
+  __hd44780dev_write_cmd(lcd, 0x28);
+  udelay(50);
+  // Display off
+  __hd44780dev_write_cmd(lcd, 0x08);
+  udelay(50);
+  // Display clear
+  __hd44780dev_write_cmd(lcd, 0x01);
+  udelay(1700);
+  // Entry mode; increment, display shift off
+  __hd44780dev_write_cmd(lcd, 0x06);
+  udelay(50);
+  return 0; 
 
-  // Display on; cursor blinking, underline
-  hd44780_write_cmd(0x0F);
-//  mdelay(5); 
-
-  // Show 'A'
-  hd44780_write_char(0x41);
-//  mdelay(5); 
-
-  DBG_TRACE("module initilized successfully");
-
-  return 0;
+fail_free_cdev:
+  cdev_del(&lcd->cdev);
 
 fail:
-  // Free all gpios that has been allocated
-  for (i = 0; i < count; i++)
-    gpio_free(lcd_gpios[i].gpio);
-
   return err;
 }
 
-static void __exit lcd_exit(void)
+static void hd44780dev_free(struct hd44780dev *lcd)
 {
-  int i = 0;
+  device_remove_file(&lcd->pdev->dev, &dev_attr_cmd);
 
-  for (i = 0; i < NUM_OF_GPIO; i++)
-    gpio_free(lcd_gpios[i].gpio);
+  cdev_del(&lcd->cdev);
+}
+
+static int hd44780dev_cdev_open(struct inode *inode, struct file *filp)
+{
+  struct hd44780dev *lcd = (struct hd44780dev *)
+    container_of(inode->i_cdev, struct hd44780dev, cdev);
+  filp->private_data = lcd;
+  return 0;
+}
+
+static ssize_t hd44780dev_cdev_write(struct file *filp, const char __user *buf, size_t count, loff_t *offp)
+{
+  struct hd44780dev *lcd = (struct hd44780dev *)filp->private_data;
+  int i = 0;
+  char c = 0;
+
+  spin_lock(&lcd->spinlock);
+  for (i = 0; i < count; i++)
+  {
+    get_user(c, buf + i);
+    __hd44780dev_write_char(lcd, c);
+    udelay(50);
+  }
+  spin_unlock(&lcd->spinlock);
+  
+  return count;
+}
+
+static int hd44780dev_cdev_release(struct inode *inode, struct file *filp)
+{
+  return 0;
+}
+
+static ssize_t hd44780dev_cmd_store(struct device *dev,
+  struct device_attribute *attr, const char *buf, size_t count)
+{
+  int err = 0;
+  struct platform_device *pdev = container_of(dev, struct platform_device, dev);
+  struct hd44780dev *lcd = platform_get_drvdata(pdev);
+  long value = 0;
+
+  spin_lock(&lcd->spinlock);
+  err = strict_strtol(buf, 0, &value);
+  CHECK_ERR(err, fail, "Invalid cmd value");
+  CHECK(value >= 0 && value < 256, err, -EINVAL, fail, "cmd value out of range");
+  __hd44780dev_write_cmd(lcd, (unsigned char)value);
+  udelay((value == 0x01 || (value & 0xFE) == 0x02) ? 1700 : 50);
+  spin_unlock(&lcd->spinlock);
+  return count;
+
+fail:
+  spin_unlock(&lcd->spinlock);
+  return err;
+}
+
+static void __hd44780dev_write_4bit(struct hd44780dev *lcd, int rs, unsigned char d)
+{
+  struct hd44780dev_data *device_data = lcd->pdev->dev.platform_data;
+  gpio_set_value(device_data->gpio_rs, rs);
+  gpio_set_value(device_data->gpio_d4, d & 0x01);
+  gpio_set_value(device_data->gpio_d5, (d >> 1) & 0x01);
+  gpio_set_value(device_data->gpio_d6, (d >> 2) & 0x01);
+  gpio_set_value(device_data->gpio_d7, (d >> 3) & 0x01);
+  ndelay(60);
+  gpio_set_value(device_data->gpio_e, 1);
+  ndelay(450);
+  gpio_set_value(device_data->gpio_e, 0);
+}
+
+static void __hd44780dev_write_char(struct hd44780dev *lcd, unsigned char d)
+{
+  __hd44780dev_write_4bit(lcd, 1, d >> 4);
+  __hd44780dev_write_4bit(lcd, 1, d);
+}
+
+static void __hd44780dev_write_cmd(struct hd44780dev *lcd, unsigned char d)
+{
+  __hd44780dev_write_4bit(lcd, 0, d >> 4);
+  __hd44780dev_write_4bit(lcd, 0, d);
+}
+
+//------------------------------------------------------------------------------
+
+static int __init hd44780drv_init(void)
+{
+  int err = alloc_chrdev_region(&lcd_driver.base_dev_number, 0, 1, "lcd");
+  CHECK_ERR(err, fail, "allocating chrdev region failed");
+
+  err = platform_driver_register(&lcd_driver.driver);
+  CHECK_ERR(err, fail_regunreg, "registering platform device failed");
+
+  DBG_TRACE("module initialize succeddfully");
+  return 0;
+
+fail_regunreg:
+  unregister_chrdev_region(lcd_driver.base_dev_number, 1);
+
+fail:
+  return err;
+}
+
+static void __exit hd44780drv_exit(void)
+{
+  platform_driver_unregister(&lcd_driver.driver);
+
+  unregister_chrdev_region(lcd_driver.base_dev_number, 1);
 
   DBG_TRACE("module exit");
 }
 
-/*
-static int __init hello_init(void)
+static int __devinit hd44780drv_probe(struct platform_device *pdev)
 {
-  unsigned int gpio_nr1 = AT91_PIN_PB0;
-  unsigned int gpio_nr2 = AT91_PIN_PB2;
-  int irq = 0;
-//  int value = 0;
+  int err = 0;
+  dev_t dev_nr = lcd_driver.base_dev_number;
+  struct hd44780dev *lcd = NULL;
 
+  lcd = kzalloc(sizeof(struct hd44780dev), GFP_KERNEL);
+  CHECK_PTR(lcd, err, fail, "Memory allocation of hd44780dev failed");
 
+  platform_set_drvdata(pdev, lcd);
 
-  printk(KERN_ALERT "Hello world!\n");
+  err = hd44780dev_init(lcd, pdev, dev_nr);
+  CHECK_ERR(err, fail_free, "Initalization of hd44780dev failed");
 
-  if (init_phc_devices() != 0)
-  {
-    printk(KERN_ALERT "init_phc_devices failed!\n");
-    return 0;
-  }
- 
-  // Output gpio
-  
-  if (gpio_request(gpio_nr1, "ICD2_PHOTOCELL OUT") != 0)
-  {
-    printk(KERN_ALERT "gpio_request failed!\n");
-    return 0;
-  }
-  
-  if (gpio_direction_output(gpio_nr1, 0) != 0)
-  {
-    printk(KERN_ALERT "gpio_direction_output failed!\n");
-    return 0;
-  }
+  DBG_TRACE("Device %s added", pdev->name);
+  return 0;
 
-  gpio_set_value(gpio_nr1, 0);
+fail_free:
+  kfree(lcd);
 
-  // Input gpio
+fail:
+  return err;
+}
 
-  if (gpio_request(gpio_nr2, "ICD2_PHOTOCELL_IN") != 0)
-  {
-    printk(KERN_ALERT "gpio_request failed!\n");
-    return 0;
-  }
-  if (gpio_direction_input(gpio_nr2) != 0)
-  {
-    printk(KERN_ALERT "gpio_direction_input failed!\n");
-    return 0;
-  }
- 
-  if (at91_set_deglitch(gpio_nr2, 1) != 0)
-  {
-    printk(KERN_ALERT "at91_set_deglitch failed!\n");
-    return 0;
-  }
+static int __devexit hd44780drv_remove(struct platform_device *pdev)
+{
+  struct hd44780dev *lcd = platform_get_drvdata(pdev);
+  hd44780dev_free(lcd);
+  kfree(lcd);
 
-//  value = gpio_get_value(gpio_nr2);
-//  printk(KERN_ALERT "gpio_get_value returned %i\n", value);
-
-  irq = gpio_to_irq(gpio_nr2);
-
-  if (request_irq(irq, photocell_irq_handler, IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING,
-    "icd2-photocell-irq", (void*)phc) != 0)
-  {
-    printk(KERN_ALERT "request_irq failed!\n");
-    return 0;
-  }
+  DBG_TRACE("Device %s removed", pdev->name);
 
   return 0;
 }
 
-static void __exit hello_exit(void)
-{
-  unsigned int gpio_nr1 = AT91_PIN_PB0;
-  unsigned int gpio_nr2 = AT91_PIN_PB2;
-  int irq;
+module_init(hd44780drv_init);
+module_exit(hd44780drv_exit);
 
-  irq = gpio_to_irq(gpio_nr2);
-  free_irq(irq, (void*)phc);
-
-  gpio_free(gpio_nr2);
-  gpio_free(gpio_nr1);
-
-  free_phc_devices();
-
-  printk(KERN_ALERT "Goodbye, cruel world\n");
-}
-*/
-module_init(lcd_init);
-module_exit(lcd_exit);
-MODULE_LICENSE("Dual BSD/GPL");
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Tomasz Rozensztrauch <t.rozensztrauch@gmail.com>")
+MODULE_DESCRIPTION("HD44780-compatible lcd device driver");
 

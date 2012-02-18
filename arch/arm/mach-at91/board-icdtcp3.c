@@ -31,6 +31,7 @@
 #include <linux/gpio_keys.h>
 #include <linux/input.h>
 #include <linux/itddrv.h>
+#include <linux/hd44780drv.h>
 
 #include <asm/setup.h>
 #include <asm/mach-types.h>
@@ -282,25 +283,25 @@ static struct itddev_data itd_data[] = {
     .gpio_in = AT91_PIN_PB6,
     .gpio_led = AT91_PIN_PB16,
     .gpio_test = AT91_PIN_PC8,
-    .desc = "itd0"
+    .descr = "itd0"
   },
   {
     .gpio_in = AT91_PIN_PB7,
     .gpio_led = AT91_PIN_PB17,
     .gpio_test = AT91_PIN_PC8,
-    .desc = "itd1"
+    .descr = "itd1"
   },
   {
     .gpio_in = AT91_PIN_PB8,
     .gpio_led = AT91_PIN_PB18,
     .gpio_test = AT91_PIN_PC8,
-    .desc = "itd2"
+    .descr = "itd2"
   },
   {
     .gpio_in = AT91_PIN_PB9,
     .gpio_led = AT91_PIN_PB19,
     .gpio_test = AT91_PIN_PC8,
-    .desc = "itd3"
+    .descr = "itd3"
   }
 };
 
@@ -309,7 +310,7 @@ static struct platform_device itd_device[] = {
     .name = "gpio-itd",
     .id = 0,
     .num_resources = 0,
-	.dev = {
+    .dev = {
       .platform_data  = &itd_data[0],
     }
   },
@@ -317,7 +318,7 @@ static struct platform_device itd_device[] = {
     .name = "gpio-itd",
     .id = 1,
     .num_resources = 0,
-	.dev = {
+    .dev = {
       .platform_data  = &itd_data[1],
     }
   },
@@ -325,7 +326,7 @@ static struct platform_device itd_device[] = {
     .name = "gpio-itd",
     .id = 2,
     .num_resources = 0,
-	.dev = {
+    .dev = {
       .platform_data  = &itd_data[2],
     }
   },
@@ -333,7 +334,7 @@ static struct platform_device itd_device[] = {
     .name = "gpio-itd",
     .id = 3,
     .num_resources = 0,
-	.dev = {
+    .dev = {
       .platform_data  = &itd_data[3],
     } 
   }
@@ -356,6 +357,37 @@ static void icdtcp3_add_device_itds(void)
 
     platform_device_register(&itd_device[i]);
   }
+}
+
+static struct hd44780dev_data lcd_data = {
+  .gpio_rs = AT91_PIN_PB20,
+  .gpio_e = AT91_PIN_PB21,
+  .gpio_d4 = AT91_PIN_PB22,
+  .gpio_d5 = AT91_PIN_PB23,
+  .gpio_d6 = AT91_PIN_PB24,
+  .gpio_d7 = AT91_PIN_PB25,
+  .descr = "lcd"
+};
+
+static struct platform_device lcd_device = {
+  .name = "gpio-hd44780",
+  .id = -1,
+  .num_resources = 0,
+  .dev = {
+    .platform_data = &lcd_data,
+  }
+};
+
+static void icdtcp3_add_device_lcd(void)
+{
+  at91_set_gpio_output(AT91_PIN_PB20, 0);
+  at91_set_gpio_output(AT91_PIN_PB21, 0);
+  at91_set_gpio_output(AT91_PIN_PB22, 0);
+  at91_set_gpio_output(AT91_PIN_PB23, 0);
+  at91_set_gpio_output(AT91_PIN_PB24, 0);
+  at91_set_gpio_output(AT91_PIN_PB25, 0);
+
+  platform_device_register(&lcd_device);
 }
 
 static void __init ek_board_init(void)
@@ -382,6 +414,8 @@ static void __init ek_board_init(void)
 	ek_add_device_buttons();
 
         icdtcp3_add_device_itds();
+
+        icdtcp3_add_device_lcd();
 }
 
 MACHINE_START(AT91SAM9260EK, "Insofter icdtcp3")

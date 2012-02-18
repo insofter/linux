@@ -6,7 +6,7 @@ struct itddev_data
   int gpio_in;
   int gpio_led;
   int gpio_test;
-  char* desc;
+  char* descr;
 };
 
 #endif // __ITDDRV_H__

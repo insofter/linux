@@ -449,7 +449,7 @@ const struct file_operations itddev_cdev_operations = {
   .release = itddev_cdev_release,
 };
 
-static int itddev_init(struct itddev *itd, struct platform_device *pdev, dev_t dev_number)
+static int itddev_init(struct itddev *itd, struct platform_device *pdev, dev_t dev_nr)
 {
   int err = 0;
   struct itddev_data *device_data = pdev->dev.platform_data;
@@ -464,7 +464,7 @@ static int itddev_init(struct itddev *itd, struct platform_device *pdev, dev_t d
   cdev_init(&itd->cdev, &itddev_cdev_operations);
   itd->cdev.owner = THIS_MODULE;
 
-  err = cdev_add(&itd->cdev, dev_number, 1);
+  err = cdev_add(&itd->cdev, dev_nr, 1);
   CHECK_ERR(err, fail_free_iobuf, "Adding character device for %s.%i failed",
     pdev->name, pdev->id);
 
@@ -715,17 +715,20 @@ static int __init itddrv_init(void)
   CHECK_ERR(err, fail, "allocating chrdev region failed");
 
   err = platform_driver_register(&itd_driver.driver);
-  CHECK_ERR(err, fail_drvreg, "registering platform device failed");
+  CHECK_ERR(err, fail_regunreg, "registering platform device failed");
 
   err = driver_create_file(&itd_driver.driver.driver, &driver_attr_test_time_usec);
-  CHECK_ERR(err, fail_drvreg, "Failed to register driver attribute 'test_time_usec_usec'");
+  CHECK_ERR(err, fail_drvunreg, "Failed to register driver attribute 'test_time_usec_usec'");
   err = driver_create_file(&itd_driver.driver.driver, &driver_attr_test);
-  CHECK_ERR(err, fail_drvreg, "Failed to register driver attribute 'test'");
+  CHECK_ERR(err, fail_drvunreg, "Failed to register driver attribute 'test'");
 
   DBG_TRACE("module initialize succeddfully");
   return 0;
 
-fail_drvreg:
+fail_drvunreg:
+  platform_driver_unregister(&itd_driver.driver);
+
+fail_regunreg:
   unregister_chrdev_region(itd_driver.base_dev_number, ITDDRV_NUM_OF_DEVS);
 
 fail:
