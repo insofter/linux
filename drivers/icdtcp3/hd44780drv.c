@@ -136,8 +136,9 @@ static ssize_t hd44780dev_cdev_write(struct file *filp, const char __user *buf, 
   for (i = 0; i < count; i++)
   {
     get_user(c, buf + i);
-    __hd44780dev_write_char(lcd, c);
-    udelay(50);
+    if (c != '\n')
+      __hd44780dev_write_char(lcd, c);
+    udelay(100);
   }
   spin_unlock(&lcd->spinlock);
   
@@ -162,7 +163,10 @@ static ssize_t hd44780dev_cmd_store(struct device *dev,
   CHECK_ERR(err, fail, "Invalid cmd value");
   CHECK(value >= 0 && value < 256, err, -EINVAL, fail, "cmd value out of range");
   __hd44780dev_write_cmd(lcd, (unsigned char)value);
-  udelay((value == 0x01 || (value & 0xFE) == 0x02) ? 1700 : 50);
+  if (value == 0x01 || (value & 0xFE) == 0x02)
+    mdelay(5);
+  else
+    udelay(100);
   spin_unlock(&lcd->spinlock);
   return count;
 
@@ -179,9 +183,9 @@ static void __hd44780dev_write_4bit(struct hd44780dev *lcd, int rs, unsigned cha
   gpio_set_value(device_data->gpio_d5, (d >> 1) & 0x01);
   gpio_set_value(device_data->gpio_d6, (d >> 2) & 0x01);
   gpio_set_value(device_data->gpio_d7, (d >> 3) & 0x01);
-  ndelay(60);
+  udelay(2);
   gpio_set_value(device_data->gpio_e, 1);
-  ndelay(450);
+  udelay(5);
   gpio_set_value(device_data->gpio_e, 0);
 }
 
