@@ -1,7 +1,7 @@
 #
 # Automatically generated make config: don't edit
 # Linux kernel version: 2.6.29.3
-# Sat Jan  7 19:40:52 2012
+# Mon Jan  9 20:57:52 2012
 #
 CONFIG_ARM=y
 CONFIG_SYS_SUPPORTS_APM_EMULATION=y
@@ -1581,6 +1581,13 @@ CONFIG_UIO=m
 # CONFIG_UIO_SMX is not set
 # CONFIG_UIO_SERCOS3 is not set
 # CONFIG_STAGING is not set
+
+#
+# Insofter icdtcp3 device support
+#
+CONFIG_ICDTCP3=y
+CONFIG_ICDTCP3_ITD=y
+CONFIG_ICDTCP3_LCD=y
 
 #
 # File systems
