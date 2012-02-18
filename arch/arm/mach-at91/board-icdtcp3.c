@@ -30,6 +30,7 @@
 #include <linux/i2c/at24.h>
 #include <linux/gpio_keys.h>
 #include <linux/input.h>
+#include <linux/itddrv.h>
 
 #include <asm/setup.h>
 #include <asm/mach-types.h>
@@ -276,6 +277,86 @@ static void __init ek_add_device_buttons(void)
 static void __init ek_add_device_buttons(void) {}
 #endif
 
+static struct icdtcp3_itd_data itd_data[] = {
+  {
+    .gpio_in = AT91_PIN_PB6,
+    .gpio_led = AT91_PIN_PB16,
+    .gpio_test = AT91_PIN_PC8,
+    .desc = "itd0"
+  },
+  {
+    .gpio_in = AT91_PIN_PB7,
+    .gpio_led = AT91_PIN_PB17,
+    .gpio_test = 0,
+    .desc = "itd1"
+  },
+  {
+    .gpio_in = AT91_PIN_PB8,
+    .gpio_led = AT91_PIN_PB18,
+    .gpio_test = 0,
+    .desc = "itd2"
+  },
+  {
+    .gpio_in = AT91_PIN_PB9,
+    .gpio_led = AT91_PIN_PB19,
+    .gpio_test = 0,
+    .desc = "itd3"
+  }
+};
+
+static struct platform_device itd_device[] = {
+  {
+    .name = "gpio-itd",
+    .id = 0,
+    .num_resources = 0,
+	.dev = {
+      .platform_data  = &itd_data[0],
+    }
+  },
+  {
+    .name = "gpio-itd",
+    .id = 1,
+    .num_resources = 0,
+	.dev = {
+      .platform_data  = &itd_data[1],
+    }
+  },
+  {
+    .name = "gpio-itd",
+    .id = 2,
+    .num_resources = 0,
+	.dev = {
+      .platform_data  = &itd_data[2],
+    }
+  },
+  {
+    .name = "gpio-itd",
+    .id = 3,
+    .num_resources = 0,
+	.dev = {
+      .platform_data  = &itd_data[3],
+    } 
+  }
+};
+
+static void icdtcp3_add_device_itds(void)
+{
+  int i;
+
+  // setup test gpio
+  at91_set_gpio_output(AT91_PIN_PC8, 0);
+
+  for (i = 0; i < ARRAY_SIZE(itd_device); i++)
+  {
+    //setup itdx in and led gpios
+    at91_set_gpio_input(itd_data[i].gpio_in, 1);
+    at91_set_deglitch(itd_data[i].gpio_in, 1);
+
+    at91_set_gpio_output(itd_data[i].gpio_led, 1);
+
+    platform_device_register(&itd_device[i]);
+  }
+}
 
 static void __init ek_board_init(void)
 {
@@ -299,6 +380,8 @@ static void __init ek_board_init(void)
 	at91_gpio_leds(ek_leds, ARRAY_SIZE(ek_leds));
 	/* Push Buttons */
 	ek_add_device_buttons();
+
+        icdtcp3_add_device_itds();
 }
 
 MACHINE_START(AT91SAM9260EK, "Insofter icdtcp3")
@@ -310,3 +393,4 @@ MACHINE_START(AT91SAM9260EK, "Insofter icdtcp3")
 	.init_irq	= ek_init_irq,
 	.init_machine	= ek_board_init,
 MACHINE_END
+

@@ -2,10 +2,11 @@
 #include <linux/module.h>
 #include <linux/gpio.h>
 #include <linux/interrupt.h>
+#include <linux/platform_device.h>
+#include <linux/itddrv.h>
 
 #include <linux/fs.h>
 #include <linux/cdev.h>
-
 
 #include <linux/uaccess.h>
 
@@ -293,7 +294,7 @@ static void free_phc_devices(void)
   unregister_chrdev_region(phc->cdev.dev, 1);
 }
 
-static int __init hello_init(void)
+/*static int __init hello_init(void)
 {
   unsigned int gpio_nr1 = AT91_PIN_PB0;
   unsigned int gpio_nr2 = AT91_PIN_PB2;
@@ -376,8 +377,62 @@ static void __exit hello_exit(void)
 
   printk(KERN_ALERT "Goodbye, cruel world\n");
 }
+*/
+//-----------------------
 
-module_init(hello_init);
-module_exit(hello_exit);
-MODULE_LICENSE("Dual BSD/GPL");
+static int __devinit itddrv_probe(struct platform_device *pdev)
+{
+  struct icdtcp3_itd_data *data = pdev->dev.platform_data;
+
+  printk(KERN_ALERT"itddrv_probe\n");
+
+  printk(KERN_ALERT"gpio_in = %i\n", data->gpio_in);
+  printk(KERN_ALERT"gpio_led = %i\n", data->gpio_led);
+  printk(KERN_ALERT"gpio_test = %i\n", data->gpio_test);
+  printk(KERN_ALERT"descr = %s\n", data->desc);
+
+  return 0;
+}
+
+static int __devexit itddrv_remove(struct platform_device *pdev)
+{
+  struct icdtcp3_itd_data *data = pdev->dev.platform_data;
+
+  printk(KERN_ALERT "itddrv_remove\n");
+
+  printk(KERN_ALERT"gpio_in = %i\n", data->gpio_in);
+  printk(KERN_ALERT"gpio_led = %i\n", data->gpio_led);
+  printk(KERN_ALERT"gpio_test = %i\n", data->gpio_test);
+  printk(KERN_ALERT"descr = %s\n", data->desc);
+
+  return 0;
+}
+
+static struct platform_driver gpio_itd_driver = {
+  .probe = itddrv_probe,
+  .remove = __devexit_p(itddrv_remove),
+  .driver = { 
+    .name = "gpio-itd",
+    .owner = THIS_MODULE,
+  }
+};
+
+static int __init itddrv_init(void)
+{
+  printk(KERN_ALERT "itddrv_init\n");
+  return platform_driver_register(&gpio_itd_driver);
+}
+
+static void __exit itddrv_exit(void)
+{
+  printk(KERN_ALERT "itddrv_exit\n");
+  platform_driver_unregister(&gpio_itd_driver);
+}
+
+module_init(itddrv_init);
+module_exit(itddrv_exit);
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Tomasz Rozensztrauch <t.rozensztrauch@gmail.com>")
+MODULE_DESCRIPTION("Itd (input transition detector) device driver for icdtcp3");
 
