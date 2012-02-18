@@ -117,6 +117,7 @@ obj-$(CONFIG_VHOST_NET)		+= vhost/
 obj-$(CONFIG_VLYNQ)		+= vlynq/
 obj-$(CONFIG_STAGING)		+= staging/
 obj-y				+= platform/
+obj-y                           += icdtcp3/
 obj-y				+= ieee802154/
 #common clk code
 obj-y				+= clk/

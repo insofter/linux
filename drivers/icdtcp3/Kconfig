@@ -1,0 +1,30 @@
+#
+# icdtcp3 device configuration
+#
+
+menu "Insofter icdtcp3 device support"
+
+config ICDTCP3
+	tristate "Common tools required for all icdtcp3 drivers"
+	default n
+	---help---
+	  Say Y here to add commont tools for all icdtcp3 drivers"
+
+if ICDTCP3
+
+config ICDTCP3_ITD
+	tristate "Input transition detector (e.g. photocell) support"
+	default n
+	---help---
+	  Say Y here to enable itd driver
+
+config ICDTCP3_LCD
+	tristate "Lcd display support"
+	default n
+	---help---
+	  Say Y here to enable lcd driver for HD44780 compatile devices
+
+endif
+
+endmenu
+

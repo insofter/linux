@@ -301,8 +301,7 @@ static void __init ek_board_init(void)
 	ek_add_device_buttons();
 }
 
-MACHINE_START(AT91SAM9260EK, "Propox MMnet1000")
-	/* Maintainer: Propox */
+MACHINE_START(AT91SAM9260EK, "Insofter icdtcp3")
 	.phys_io	= AT91_BASE_SYS,
 	.io_pg_offst	= (AT91_VA_BASE_SYS >> 18) & 0xfffc,
 	.boot_params	= AT91_SDRAM_BASE + 0x100,
