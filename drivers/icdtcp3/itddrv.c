@@ -46,6 +46,19 @@ struct itddev_event
   int state;
 };
 
+static inline void  __itddev_set_led_on(struct itddev *itd)
+{
+  struct itddev_data *device_data = itd->pdev->dev.platform_data;
+  gpio_set_value(device_data->gpio_led, 0);
+}
+
+static inline void  __itddev_set_led_off(struct itddev *itd)
+{
+  struct itddev_data *device_data = itd->pdev->dev.platform_data;
+  gpio_set_value(device_data->gpio_led, 1);
+}
+
+
 #define ITDDRV_NUM_OF_DEVS (4)
 
 struct itddrv
@@ -58,9 +71,21 @@ struct itddrv
   struct platform_driver driver;
 };
 
+static void __itddrv_test_delay(struct itddrv *itd_driver);
+
+static inline void __itddrv_set_test_on(struct itddrv *itd_driver)
+{
+  gpio_set_value(itd_driver->gpio_test, 1);
+}
+
+static inline void __itddrv_set_test_off(struct itddrv *itd_driver)
+{
+  gpio_set_value(itd_driver->gpio_test, 0);
+}
+
 //------------------------------------------------------------------------------
 
-static int __itddev_read_gpio_value(struct itddev *itd)
+static int __itddev_read_value(struct itddev *itd)
 {
   struct itddev_data *device_data = itd->pdev->dev.platform_data;
   int value = gpio_get_value(device_data->gpio_in);
@@ -174,16 +199,21 @@ static ssize_t itddev_test_show(struct device *dev,
 
   spin_lock_bh(&itd_driver->spinlock);
   spin_lock_bh(&itd->spinlock);
-  value = __itddev_read_gpio_value(itd);
+
+  value = __itddev_read_value(itd);
   if (value == ITDDEV_BLOCKED)
     test += 1;
-  gpio_set_value(itd_driver->gpio_test, 1);
-//  udelay(itd_driver->test_time_usec);
-  mdelay(itd_driver->test_time_usec / 1000);
-  value = __itddev_read_gpio_value(itd);
+
+  __itddrv_set_test_on(itd_driver);
+
+  __itddrv_test_delay(itd_driver);
+
+  value = __itddev_read_value(itd);
   if (value == ITDDEV_CLEAR)
     test += 2;
-  gpio_set_value(itd_driver->gpio_test, 0);
+
+  __itddrv_set_test_off(itd_driver);
+
   spin_unlock_bh(&itd->spinlock);
   spin_unlock_bh(&itd_driver->spinlock);
 
@@ -217,91 +247,86 @@ static inline void timeval_offset_usec(struct timeval *tm, long offset_usec)
  }
 }
 
-static int __itddev_queue_event(struct itddev *photocell,
+static int __itddev_queue_event(struct itddev *itd,
   struct timeval *tm, int state)
 {
-  // queue photocell event & wake up waiting processes
-  struct itddev_event *entry = NULL;
+  // queue itd event & wake up waiting processes
+  int err = 0;
+  struct itddev_event *ev = NULL;
 
-  entry = kmalloc(sizeof(struct itddev_event), GFP_ATOMIC);
-  if (entry == NULL)
-    printk(KERN_ALERT "kmalloc failed\n");
-  if (entry)
-  {
-    entry->sec = tm->tv_sec;
-    entry->usec = tm->tv_usec;
-    entry->state = state;
+  ev = kmalloc(sizeof(struct itddev_event), GFP_ATOMIC);
+  CHECK_PTR(ev, err, fail, "Memory allocation of itddev_event failed");
 
-    list_add_tail(&entry->list, &photocell->queue);
+  ev->sec = tm->tv_sec;
+  ev->usec = tm->tv_usec;
+  ev->state = state;
+
+  list_add_tail(&ev->list, &itd->queue);
        
-    printk(KERN_ALERT "TM: Queued: sec=%lu, usec=%lu, state=%i\n",
-      entry->sec, entry->usec, entry->state);
+  DBG_TRACE("%s.%d event: sec=%lu,usec=%lu,state=%i\n",
+    itd->pdev->name, itd->pdev->id, ev->sec, ev->usec, ev->state);
 
-    atomic_inc(&photocell->queue_count);
-    wake_up_interruptible(&photocell->queue_ready);
-  }
+  atomic_inc(&itd->queue_count);
+  wake_up_interruptible(&itd->queue_ready);
 
-  return 0;
+fail:
+  return err;
 }
 
 static void itddev_timer_fn(unsigned long data)
 {
-  struct itddev *photocell = (struct itddev *)data;
-  struct itddev_data *device_data = photocell->pdev->dev.platform_data;
+  struct itddev *itd = (struct itddev *)data;
   struct timeval tm;
 
   do_gettimeofday(&tm);
 
-  spin_lock_bh(&photocell->spinlock);
+  spin_lock_bh(&itd->spinlock);
 
-  if (!photocell->timer_running)
+  // This is legitimate case - it may happen that the timer has been cancelled
+  // but it happened "too late" so this handler was called, but should do nothing
+  if (!itd->timer_running)
     goto unlock;
 
-  switch(photocell->state)
+  switch(itd->state)
   {
     case ITDDEV_UNINITIALIZED:
-      photocell->state = ITDDEV_CLEAR;
-      printk(KERN_ALERT "TM: %lu, UNINITIALIZED -> CLEAR\n", jiffies);
-      gpio_set_value(device_data->gpio_led, 1);
+      itd->state = ITDDEV_CLEAR;
+      DBG_TRACE("%s.%d state UNINITIALIZED -> CLEAR", itd->pdev->name, itd->pdev->id);
+      __itddev_set_led_off(itd);
       break;
 
     case ITDDEV_CLEAR:
-      printk(KERN_ALERT "TM: %lu, CLEAR -> BLOCKED\n", jiffies);
-      photocell->state = ITDDEV_BLOCKED;
-      timeval_offset_usec(&tm, -photocell->engage_delay_usec);
-      __itddev_queue_event(photocell, &tm, ITDDEV_BLOCKED);
-      gpio_set_value(device_data->gpio_led, 0);
+      DBG_TRACE("%s.%d state CLEAR -> BLOCKED", itd->pdev->name, itd->pdev->id);
+      itd->state = ITDDEV_BLOCKED;
+      timeval_offset_usec(&tm, -itd->engage_delay_usec);
+      __itddev_queue_event(itd, &tm, ITDDEV_BLOCKED);
+      __itddev_set_led_on(itd);
       break;
 
     case ITDDEV_BLOCKED:
-      photocell->state = ITDDEV_CLEAR;
-      printk(KERN_ALERT "TM: %lu, BLOCKED -> CLEAR\n", jiffies);
-      timeval_offset_usec(&tm, -photocell->release_delay_usec);
-      __itddev_queue_event(photocell, &tm, ITDDEV_CLEAR);
-      gpio_set_value(device_data->gpio_led, 1);
+      itd->state = ITDDEV_CLEAR;
+      DBG_TRACE("%s.%d state BLOCKED -> CLEAR", itd->pdev->name, itd->pdev->id);
+      timeval_offset_usec(&tm, -itd->release_delay_usec);
+      __itddev_queue_event(itd, &tm, ITDDEV_CLEAR);
+      __itddev_set_led_off(itd);
       break;
 
     default:
-      printk(KERN_ALERT "TM: %lu, Error! Invalid value of state! ? -> UNINITIALIZED\n", jiffies);
-      photocell->state = ITDDEV_UNINITIALIZED;
+      DBG_REPORT(-EINVAL, "%s.%d Invalid state; ? -> UNINITIALIZED",
+        itd->pdev->name, itd->pdev->id);
+      itd->state = ITDDEV_UNINITIALIZED;
+      tasklet_schedule(&itd->irq_tasklet);
+      __itddev_set_led_off(itd);
   }
 
-  photocell->timer_running = 0;
+  itd->timer_running = 0;
 
 unlock:
-  spin_unlock_bh(&photocell->spinlock);
+  spin_unlock_bh(&itd->spinlock);
 }
 
 static void itddev_irq_tasklet_fn(unsigned long data)
 {
-  struct itddev *photocell = (struct itddev *)data;
-  unsigned long delay_usec;
-  int value = 0;
-
-  spin_lock_bh(&photocell->spinlock);
-
-  value = __itddev_read_gpio_value(photocell);
-
   // state value action
   // -1     0    (re)start timer
   // -1     1    cancel timer if running
@@ -310,80 +335,90 @@ static void itddev_irq_tasklet_fn(unsigned long data)
   //  1     0    (re)start timer
   //  1     1    cancel timer if running
 
-  if ((photocell->state == ITDDEV_UNINITIALIZED && value == ITDDEV_CLEAR)
-    || (photocell->state == ITDDEV_CLEAR && value == ITDDEV_BLOCKED)
-    || (photocell->state == ITDDEV_BLOCKED && value == ITDDEV_CLEAR))
+  struct itddev *itd = (struct itddev *)data;
+  unsigned long delay_usec;
+  int value = 0;
+
+  spin_lock_bh(&itd->spinlock);
+
+  value = __itddev_read_value(itd);
+
+  if ((itd->state == ITDDEV_UNINITIALIZED && value == ITDDEV_CLEAR)
+    || (itd->state == ITDDEV_CLEAR && value == ITDDEV_BLOCKED)
+    || (itd->state == ITDDEV_BLOCKED && value == ITDDEV_CLEAR))
   {
-    delay_usec = (value == ITDDEV_BLOCKED) ? photocell->engage_delay_usec :
-      photocell->release_delay_usec;
-    mod_timer(&photocell->timer, jiffies + usecs_to_jiffies(delay_usec));
-    photocell->timer_running = 1;
-    printk(KERN_ALERT "IRQ: gpio=%u, jiffies=%lu TIMER (RE)STARTED\n", value, jiffies);
+    delay_usec = (value == ITDDEV_BLOCKED) ? itd->engage_delay_usec :
+      itd->release_delay_usec;
+    mod_timer(&itd->timer, jiffies + usecs_to_jiffies(delay_usec));
+    itd->timer_running = 1;
+    DBG_TRACE("%s.%d irq: value=%i, TIMER (RE)STARTED",
+      itd->pdev->name, itd->pdev->id, value);
   }
   else
   {
-    photocell->timer_running = 0;
-    del_timer(&photocell->timer);
-    printk(KERN_ALERT "IRQ: gpio=%u, jiffies=%lu TIMER CANCELED\n", value, jiffies);
+    itd->timer_running = 0;
+    del_timer(&itd->timer);
+    DBG_TRACE("%s.%d irq: value=%i, TIMER CANCELED",
+      itd->pdev->name, itd->pdev->id, value);
   }
 
-  spin_unlock_bh(&photocell->spinlock);
+  spin_unlock_bh(&itd->spinlock);
 }
 
 static irqreturn_t itddev_irq_handler_fn(int irq, void *dev)
 {
-  struct itddev *photocell = (struct itddev *)dev;
-  tasklet_schedule(&photocell->irq_tasklet);
+  struct itddev *itd = (struct itddev *)dev;
+  tasklet_schedule(&itd->irq_tasklet);
   return IRQ_HANDLED;
 }
 
 static int itddev_cdev_open(struct inode *inode, struct file *filp)
 {
-  struct itddev *photocell = (struct itddev *)
+  struct itddev *itd = (struct itddev *)
     container_of(inode->i_cdev, struct itddev, cdev);
-  filp->private_data = photocell;
+  filp->private_data = itd;
   return 0;
 }
 
 static int itddev_cdev_read(struct file *filp, __user char *buf, size_t count, loff_t *offp)
 {
   int err = 0;
-  struct itddev *dev = (struct itddev *)filp->private_data;
+  struct itddev *itd = (struct itddev *)filp->private_data;
   struct itddev_event* entry = NULL;
   size_t copied = 0;
   size_t len = 0;
   unsigned long res = 0;
 
   // In case some data has left in the buffer from previous read operation
-  if (dev->iobuf_ptr != 0 && dev->iobuf_ptr[0] != 0)
+  if (itd->iobuf_ptr != 0 && itd->iobuf_ptr[0] != 0)
   {
-    len = min(count - copied, strlen(dev->iobuf_ptr));
-    res = copy_to_user(buf + copied, dev->iobuf_ptr, len);
-    //ICD2_CHECK(res == 0);
-    dev->iobuf_ptr += len;
+    len = min(count - copied, strlen(itd->iobuf_ptr));
+    res = copy_to_user(buf + copied, itd->iobuf_ptr, len);
+    CHECK(res == 0, err, -EINVAL, fail, "Copying data to userspace buffer failed");
+    itd->iobuf_ptr += len;
     copied += len;
   }
 
   while(copied < count)
   {
-    while (atomic_read(&dev->queue_count) > 0)
+    while (atomic_read(&itd->queue_count) > 0)
     {
-      spin_lock_bh(&dev->spinlock);
+      spin_lock_bh(&itd->spinlock);
 
-      atomic_dec(&dev->queue_count);
-      //ICD2_CHECK(!list_empty(&photocell->queue));
-      entry = list_first_entry(&dev->queue, struct itddev_event, list);
-      snprintf(dev->iobuf, ITDDEV_IOBUF_SIZE, "%lu %lu %i\n",
+      atomic_dec(&itd->queue_count);
+      CHECK(!list_empty(&itd->queue), err, -EINVAL, fail, "Corrupt event queue");
+      entry = list_first_entry(&itd->queue, struct itddev_event, list);
+      snprintf(itd->iobuf, ITDDEV_IOBUF_SIZE, "%lu %lu %i\n",
         entry->sec, entry->usec, entry->state);
       list_del(&entry->list);
       kfree(entry);
 
-      spin_unlock_bh(&dev->spinlock);
+      spin_unlock_bh(&itd->spinlock);
 
-      len = min(count - copied, strlen(dev->iobuf));
-      res = copy_to_user(buf + copied, dev->iobuf, len);
-      //ICD2_CHECK(res == 0);
-      dev->iobuf_ptr = dev->iobuf + len;
+      len = min(count - copied, strlen(itd->iobuf));
+      res = copy_to_user(buf + copied, itd->iobuf, len);
+      CHECK(res == 0, err, -EINVAL, fail, "Copying data to userspace buffer failed");
+      itd->iobuf_ptr = itd->iobuf + len;
       copied += len;
 
       if (copied == count)
@@ -393,14 +428,17 @@ static int itddev_cdev_read(struct file *filp, __user char *buf, size_t count, l
     if (copied > 0)
       break;
 
-    err = wait_event_interruptible(dev->queue_ready,
-      atomic_read(&dev->queue_count) > 0);
-    //ICD2_CHECK_ERR()
+    err = wait_event_interruptible(itd->queue_ready,
+      atomic_read(&itd->queue_count) > 0);
+    CHECK_ERR(err, fail, "Wait for queue ready failed");
     if (err)
       break;
   }
 
   return copied;
+
+fail:
+  return err;
 }
 
 static int itddev_cdev_release(struct inode *inode, struct file *filp)
@@ -420,14 +458,11 @@ static int itddev_init(struct itddev *itd, struct platform_device *pdev, dev_t d
 {
   int err = 0;
   struct itddev_data *device_data = pdev->dev.platform_data;
-  int irq = 0;
+
+  itd->pdev = pdev;
 
   itd->iobuf = kmalloc(ITDDEV_IOBUF_SIZE, GFP_KERNEL);
-  if (!itd->iobuf)
-  {
-    kfree(itd);
-    return -ENOMEM;
-  }
+  CHECK_PTR(itd->iobuf, err, fail, "Memory allocation of iobuf failed");
   itd->iobuf[0] = 0;
   itd->iobuf_ptr = itd->iobuf;
 
@@ -435,49 +470,52 @@ static int itddev_init(struct itddev *itd, struct platform_device *pdev, dev_t d
   itd->cdev.owner = THIS_MODULE;
 
   err = cdev_add(&itd->cdev, dev_number, 1);
-  if (err)
-  {
-    printk(KERN_ALERT "cdev_add failed!\n");
-    return err;
-  }
+  CHECK_ERR(err, fail_free_iobuf, "Adding character device for %s.%i failed",
+    pdev->name, pdev->id);
 
-  itd->pdev = pdev;
-
-  irq = gpio_to_irq(device_data->gpio_in );
-
-  if (request_irq(irq, itddev_irq_handler_fn, IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING,
-    "icd2-photocell-irq", (void*)itd) != 0)
-  {
-    printk(KERN_ALERT "request_irq failed!\n");
-    return 0;
-  }
+  err = request_irq(gpio_to_irq(device_data->gpio_in), itddev_irq_handler_fn,
+    IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING, "itd-irq", (void*)itd);
+  CHECK_ERR(err, fail_free_cdev, "Requesting irq for %s.%i failed",
+    pdev->name, pdev->id);
 
   itd->state = ITDDEV_UNINITIALIZED;
   itd->timer_running = 0;
+
   itd->engage_delay_usec = 2000000;
   itd->release_delay_usec = 2000000;
   itd->active_low = 0;
+
   INIT_LIST_HEAD(&itd->queue);
   atomic_set(&itd->queue_count, 0);
   init_waitqueue_head(&itd->queue_ready);
   spin_lock_init(&itd->spinlock);
   tasklet_init(&itd->irq_tasklet, itddev_irq_tasklet_fn, (unsigned long)itd);
+
   init_timer(&itd->timer);
   itd->timer.data = (unsigned long)itd;
   itd->timer.function = itddev_timer_fn;
 
   err = device_create_file(&pdev->dev, &dev_attr_engage_delay_usec);
-  CHECK_ERR(err, fail, "Failed to register device attribute 'engage_delay_usec'");
+  CHECK_ERR(err, fail_free_irq, "Failed to register device attribute 'engage_delay_usec'");
   err = device_create_file(&pdev->dev, &dev_attr_release_delay_usec);
-  CHECK_ERR(err, fail, "Failed to register device attribute 'release_delay_usec'");
+  CHECK_ERR(err, fail_free_irq, "Failed to register device attribute 'release_delay_usec'");
   err = device_create_file(&pdev->dev, &dev_attr_active_low);
-  CHECK_ERR(err, fail, "Failed to register device attribute 'active_low'");
+  CHECK_ERR(err, fail_free_irq, "Failed to register device attribute 'active_low'");
   err = device_create_file(&pdev->dev, &dev_attr_test);
-  CHECK_ERR(err, fail, "Failed to register device attribute 'test'");
+  CHECK_ERR(err, fail_free_irq, "Failed to register device attribute 'test'");
 
+  __itddev_set_led_off(itd);
   tasklet_schedule(&itd->irq_tasklet);
-
   return 0;
+
+fail_free_irq:
+  free_irq(gpio_to_irq(device_data->gpio_in), (void*)itd);
+
+fail_free_cdev:
+  cdev_del(&itd->cdev);
+
+fail_free_iobuf:
+  kfree(itd->iobuf);
 
 fail:
   return err;
@@ -501,6 +539,20 @@ static void itddev_free(struct itddev *itd)
 
 //------------------------------------------------------------------------------
 
+static void __itddrv_test_delay(struct itddrv *itd_driver)
+{
+  long n = itd_driver->test_time_usec;  
+  if (n <= MAX_UDELAY_MS * 1000)
+  {
+    udelay(n);
+  }
+  else
+  {
+    mdelay(n / 1000);
+    udelay(n % 1000);
+  }
+}
+
 static int __devinit itddrv_probe(struct platform_device *pdev)
 {
   int err = 0;
@@ -512,7 +564,7 @@ static int __devinit itddrv_probe(struct platform_device *pdev)
   dev_t dev_nr = itd_driver->base_dev_number + pdev->id;
   struct itddev *itd = NULL;
   
-  CHECK(pdev->id > 0 && pdev->id < ITDDRV_NUM_OF_DEVS, err, -EINVAL, fail,
+  CHECK(pdev->id >= 0 && pdev->id < ITDDRV_NUM_OF_DEVS, err, -EINVAL, fail,
     "Platform device id out of supported range");
 
   spin_lock_bh(&itd_driver->spinlock);
@@ -608,43 +660,50 @@ static ssize_t itddrv_test_show(struct device_driver *driver, char *buf)
   struct platform_driver *pdrv = container_of(driver, struct platform_driver, driver);
   struct itddrv *itd_driver = container_of(pdrv, struct itddrv, driver);
 
-//  struct platform_device *pdev = container_of(dev, struct platform_device, dev);
-//  struct platform_driver *driver = container_of(pdev->dev.driver,
-//    struct platform_driver, driver);
-//  struct itddrv *itd_driver = container_of(driver,
-//    struct itddrv, driver);
-//  struct itddev *itd = platform_get_drvdata(pdev);
   long value = 0;
-  int test = 0;
+  int test[ITDDRV_NUM_OF_DEVS] = { 0 };
+  int i = 0;
+  int count = 0;
 
   CHECK(itd_driver->gpio_test > 0, err, -EINVAL, fail, "Test gpio pin not set");
 
   spin_lock_bh(&itd_driver->spinlock);
+  for (i = 0; i < ITDDRV_NUM_OF_DEVS; i++)
+    if (itd_driver->itd[i] != NULL)
+      spin_lock_bh(&itd_driver->itd[i]->spinlock);
 
-  // lock all itds
+  for (i = 0; i < ITDDRV_NUM_OF_DEVS; i++)
+  {
+    if (itd_driver->itd[i] == NULL)
+      continue;
+    value = __itddev_read_value(itd_driver->itd[i]);
+    if (value == ITDDEV_BLOCKED)
+      test[i] += 1;
+  }
 
-  // read values for all itds
-  //value = __itddev_read_gpio_value(itd);
-  //if (value == ITDDEV_BLOCKED)
-    //test += 1;
+  __itddrv_set_test_on(itd_driver);
 
-  gpio_set_value(itd_driver->gpio_test, 1);
+  __itddrv_test_delay(itd_driver);
 
-  //  udelay(itd_driver->test_time_usec);
-  mdelay(itd_driver->test_time_usec / 1000);
+  for (i = 0; i < ITDDRV_NUM_OF_DEVS; i++)
+  {
+    if (itd_driver->itd[i] == NULL)
+      continue;
+    value = __itddev_read_value(itd_driver->itd[i]);
+    if (value == ITDDEV_CLEAR)
+      test[i] += 2;
+  }
 
-  // read values for all itds
-  //value = __itddev_read_gpio_value(itd);
-  //if (value == ITDDEV_CLEAR)
-    //test += 2;
+  __itddrv_set_test_off(itd_driver);
 
-  gpio_set_value(itd_driver->gpio_test, 0);
-
-  //unlocak all itds
-
+  for (i = ITDDRV_NUM_OF_DEVS - 1; i >= 0; i--)
+    if (itd_driver->itd[i] != NULL)
+      spin_unlock_bh(&itd_driver->itd[i]->spinlock);
   spin_unlock_bh(&itd_driver->spinlock);
 
-  return sprintf(buf, "%i\n", test);
+  for (i = 0; i < ITDDRV_NUM_OF_DEVS - 1; i++)
+    count += sprintf(buf + count, "%i ", test[i]);
+  return count + sprintf(buf + count, "%i\n", test[ITDDRV_NUM_OF_DEVS - 1]);
 
 fail:
   return err;
