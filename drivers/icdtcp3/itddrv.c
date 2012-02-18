@@ -10,6 +10,8 @@
 
 #include <linux/uaccess.h>
 
+#include "icdcommon.h"
+
 #define PHOTOCELL_CLEAR (0)
 #define PHOTOCELL_BLOCKED (1)
 #define PHOTOCELL_UNINITIALIZED (-1)
@@ -19,6 +21,7 @@
 struct photocell_device 
 {
   struct cdev cdev;
+  struct platform_device *pdev;
   char *iobuf;
   char *iobuf_ptr;
  
@@ -43,11 +46,10 @@ struct photocell_entry
   unsigned long end_time;
 };
 
-static struct photocell_device *phc;
-
 void photocell_timer_fn(unsigned long data)
 {
   struct photocell_device *photocell = (struct photocell_device *)data;
+  struct icdtcp3_itd_data *device_data = photocell->pdev->dev.platform_data;
   struct photocell_entry *entry = NULL;
 
   spin_lock_bh(&photocell->spinlock);
@@ -59,14 +61,14 @@ void photocell_timer_fn(unsigned long data)
     case PHOTOCELL_UNINITIALIZED:
       photocell->state = PHOTOCELL_CLEAR;
       printk(KERN_ALERT "TM: %lu, UNINITIALIZED -> CLEAR\n", jiffies);
-      gpio_set_value(AT91_PIN_PB0, 1);
+      gpio_set_value(device_data->gpio_led, 1);
       break;
 
     case PHOTOCELL_CLEAR:
       photocell->state = PHOTOCELL_BLOCKED;
       photocell->start_time = jiffies - photocell->engage_delay;
       printk(KERN_ALERT "TM: %lu, CLEAR -> BLOCKED\n", jiffies);
-      gpio_set_value(AT91_PIN_PB0, 0);
+      gpio_set_value(device_data->gpio_led, 0);
       break;
 
     case PHOTOCELL_BLOCKED:
@@ -88,7 +90,7 @@ void photocell_timer_fn(unsigned long data)
         atomic_inc(&photocell->queue_count);
         wake_up_interruptible(&photocell->queue_ready);
       }
-      gpio_set_value(AT91_PIN_PB0, 1);
+      gpio_set_value(device_data->gpio_led, 1);
       break;
 
     default:
@@ -105,13 +107,11 @@ unlock:
 void photocell_irq_tasklet_fn(unsigned long data)
 {
   struct photocell_device *photocell = (struct photocell_device *)data;
+  struct icdtcp3_itd_data *device_data = photocell->pdev->dev.platform_data;
   unsigned long delay;
-//  unsigned int gpio_nr1 = AT91_PIN_PB0;
-  unsigned int gpio_nr2 = AT91_PIN_PB2;
   int gpio = 0;
 
-  gpio = gpio_get_value(gpio_nr2) ? 0 : 1; // Hardcoded reversion for now
-//  gpio_set_value(gpio_nr1, gpio);
+  gpio = gpio_get_value(device_data->gpio_in) ? 0 : 1;
 
   // state gpio action
   // -1     0    (re)start timer
@@ -141,7 +141,6 @@ void photocell_irq_tasklet_fn(unsigned long data)
 
   spin_unlock_bh(&photocell->spinlock);
 }
-
 
 irqreturn_t photocell_irq_handler(int irq, void *dev)
 {
@@ -229,22 +228,41 @@ const struct file_operations phc_cdev_operations = {
   .release = phc_cdev_release,
 };
 
+//----------------------
 
-static int init_phc_devices(void)
+#define ITDDRV_NUM_OF_DEVS (4)
+
+struct itddrv_data
 {
-  int err;
-  dev_t dev;
+  dev_t base_dev_number;
+  struct platform_driver driver;
+};
 
-  err = alloc_chrdev_region(&dev, 0, 1, "photocell");
-  if (err)
-  {
-    printk(KERN_ALERT "alloc_chrdev_region failed!\n");
-    return err;
-  }
+static inline struct itddrv_data *ITDDRV_DATA(struct platform_driver *drv)
+{
+  return container_of(drv, struct itddrv_data, driver);
+}
 
-  phc = kzalloc(sizeof(struct photocell_device), GFP_KERNEL);
+static int __devinit itddrv_probe(struct platform_device *pdev)
+{
+  int err = 0;
+  struct platform_driver *driver = container_of(pdev->dev.driver, struct platform_driver, driver);
+  struct itddrv_data *driver_data = ITDDRV_DATA(driver);
+  struct icdtcp3_itd_data *device_data = pdev->dev.platform_data;
+  struct photocell_device *phc = NULL;
+  int irq = 0;
+
+  printk(KERN_ALERT"itddrv_probe\n");
+  printk(KERN_ALERT"gpio_in = %i\n", device_data->gpio_in);
+  printk(KERN_ALERT"gpio_led = %i\n", device_data->gpio_led);
+  printk(KERN_ALERT"gpio_test = %i\n", device_data->gpio_test);
+  printk(KERN_ALERT"descr = %s\n", device_data->desc);
+
+  phc  = kzalloc(sizeof(struct photocell_device), GFP_KERNEL);
   if (!phc)
     return -ENOMEM;
+
+  platform_set_drvdata(pdev, phc);
   
   phc->iobuf = kmalloc(PHOTOCELL_IOBUFF_SIZE, GFP_KERNEL);
   if (!phc->iobuf)
@@ -258,11 +276,22 @@ static int init_phc_devices(void)
   cdev_init(&phc->cdev, &phc_cdev_operations);
   phc->cdev.owner = THIS_MODULE;
 
-  err = cdev_add(&phc->cdev, dev, 1);
+  err = cdev_add(&phc->cdev, driver_data->base_dev_number + pdev->id, 1);
   if (err)
   {
     printk(KERN_ALERT "cdev_add failed!\n");
     return err;
+  }
+
+  phc->pdev = pdev;
+
+  irq = gpio_to_irq(device_data->gpio_in );
+
+  if (request_irq(irq, photocell_irq_handler, IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING,
+    "icd2-photocell-irq", (void*)phc) != 0)
+  {
+    printk(KERN_ALERT "request_irq failed!\n");
+    return 0;
   }
 
   printk(KERN_ALERT "HZ=%d\n", HZ);
@@ -286,147 +315,65 @@ static int init_phc_devices(void)
   return 0;
 }
 
-static void free_phc_devices(void)
+static int __devexit itddrv_remove(struct platform_device *pdev)
 {
+  struct icdtcp3_itd_data *device_data = pdev->dev.platform_data;
+  struct photocell_device *phc = platform_get_drvdata(pdev);
+  int irq = 0;
+
+  printk(KERN_ALERT "itddrv_remove\n");
+  printk(KERN_ALERT"gpio_in = %i\n", device_data->gpio_in);
+  printk(KERN_ALERT"gpio_led = %i\n", device_data->gpio_led);
+  printk(KERN_ALERT"gpio_test = %i\n", device_data->gpio_test);
+  printk(KERN_ALERT"descr = %s\n", device_data->desc);
+
+  irq = gpio_to_irq(device_data->gpio_in);
+  free_irq(irq, (void*)phc);
+
   cdev_del(&phc->cdev);
   kfree(phc->iobuf);
   kfree(phc);
-  unregister_chrdev_region(phc->cdev.dev, 1);
-}
-
-/*static int __init hello_init(void)
-{
-  unsigned int gpio_nr1 = AT91_PIN_PB0;
-  unsigned int gpio_nr2 = AT91_PIN_PB2;
-  int irq = 0;
-//  int value = 0;
-
-
-
-  printk(KERN_ALERT "Hello world!\n");
-
-  if (init_phc_devices() != 0)
-  {
-    printk(KERN_ALERT "init_phc_devices failed!\n");
-    return 0;
-  }
- 
-  // Output gpio
-  
-  if (gpio_request(gpio_nr1, "ICD2_PHOTOCELL OUT") != 0)
-  {
-    printk(KERN_ALERT "gpio_request failed!\n");
-    return 0;
-  }
-  
-  if (gpio_direction_output(gpio_nr1, 0) != 0)
-  {
-    printk(KERN_ALERT "gpio_direction_output failed!\n");
-    return 0;
-  }
-
-  gpio_set_value(gpio_nr1, 0);
-
-  // Input gpio
-
-  if (gpio_request(gpio_nr2, "ICD2_PHOTOCELL_IN") != 0)
-  {
-    printk(KERN_ALERT "gpio_request failed!\n");
-    return 0;
-  }
-  if (gpio_direction_input(gpio_nr2) != 0)
-  {
-    printk(KERN_ALERT "gpio_direction_input failed!\n");
-    return 0;
-  }
- 
-  if (at91_set_deglitch(gpio_nr2, 1) != 0)
-  {
-    printk(KERN_ALERT "at91_set_deglitch failed!\n");
-    return 0;
-  }
-
-//  value = gpio_get_value(gpio_nr2);
-//  printk(KERN_ALERT "gpio_get_value returned %i\n", value);
-
-  irq = gpio_to_irq(gpio_nr2);
-
-  if (request_irq(irq, photocell_irq_handler, IRQF_TRIGGER_FALLING | IRQF_TRIGGER_RISING,
-    "icd2-photocell-irq", (void*)phc) != 0)
-  {
-    printk(KERN_ALERT "request_irq failed!\n");
-    return 0;
-  }
 
   return 0;
 }
 
-static void __exit hello_exit(void)
-{
-  unsigned int gpio_nr1 = AT91_PIN_PB0;
-  unsigned int gpio_nr2 = AT91_PIN_PB2;
-  int irq;
-
-  irq = gpio_to_irq(gpio_nr2);
-  free_irq(irq, (void*)phc);
-
-  gpio_free(gpio_nr2);
-  gpio_free(gpio_nr1);
-
-  free_phc_devices();
-
-  printk(KERN_ALERT "Goodbye, cruel world\n");
-}
-*/
-//-----------------------
-
-static int __devinit itddrv_probe(struct platform_device *pdev)
-{
-  struct icdtcp3_itd_data *data = pdev->dev.platform_data;
-
-  printk(KERN_ALERT"itddrv_probe\n");
-
-  printk(KERN_ALERT"gpio_in = %i\n", data->gpio_in);
-  printk(KERN_ALERT"gpio_led = %i\n", data->gpio_led);
-  printk(KERN_ALERT"gpio_test = %i\n", data->gpio_test);
-  printk(KERN_ALERT"descr = %s\n", data->desc);
-
-  return 0;
-}
-
-static int __devexit itddrv_remove(struct platform_device *pdev)
-{
-  struct icdtcp3_itd_data *data = pdev->dev.platform_data;
-
-  printk(KERN_ALERT "itddrv_remove\n");
-
-  printk(KERN_ALERT"gpio_in = %i\n", data->gpio_in);
-  printk(KERN_ALERT"gpio_led = %i\n", data->gpio_led);
-  printk(KERN_ALERT"gpio_test = %i\n", data->gpio_test);
-  printk(KERN_ALERT"descr = %s\n", data->desc);
-
-  return 0;
-}
-
-static struct platform_driver gpio_itd_driver = {
-  .probe = itddrv_probe,
-  .remove = __devexit_p(itddrv_remove),
-  .driver = { 
-    .name = "gpio-itd",
-    .owner = THIS_MODULE,
+static struct itddrv_data driver_data= {
+  .driver = {
+    .probe = itddrv_probe,
+    .remove = __devexit_p(itddrv_remove),
+    .driver = { 
+      .name = "gpio-itd",
+      .owner = THIS_MODULE,
+    }
   }
 };
 
 static int __init itddrv_init(void)
 {
-  printk(KERN_ALERT "itddrv_init\n");
-  return platform_driver_register(&gpio_itd_driver);
+  int err = alloc_chrdev_region(&driver_data.base_dev_number, 0,
+    ITDDRV_NUM_OF_DEVS, "itd");
+  CHECK_ERR(err, fail, "allocating chrdev region failed");
+  
+  err = platform_driver_register(&driver_data.driver);
+  CHECK_ERR(err, fail_drvreg, "registering platform device failed");
+
+  DBG_TRACE("module initialize succeddfully");
+  return 0;
+
+fail_drvreg:
+  unregister_chrdev_region(driver_data.base_dev_number, ITDDRV_NUM_OF_DEVS);
+
+fail:
+  return err;
 }
 
 static void __exit itddrv_exit(void)
 {
-  printk(KERN_ALERT "itddrv_exit\n");
-  platform_driver_unregister(&gpio_itd_driver);
+  platform_driver_unregister(&driver_data.driver);
+
+  unregister_chrdev_region(driver_data.base_dev_number, ITDDRV_NUM_OF_DEVS);
+
+  DBG_TRACE("module exit");
 }
 
 module_init(itddrv_init);
