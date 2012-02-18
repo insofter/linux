@@ -250,6 +250,13 @@ config MACH_FLEXIBITY
 	  Select this if you are using Flexibity Connect board
 	  <http://www.flexibity.com>
 
+config MACH_ICDTCP3
+       bool "Insofter ICDTCP3 device."
+       depends on ARCH_AT91SAM9260
+       help
+         Select this for Insofter ICDTCP3 device. (Based on Propox MMnet1001/1002 board).
+         <http://www.insofter.pl>
+
 endif
 
 # ----------------------------------------------------------
