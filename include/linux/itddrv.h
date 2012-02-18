@@ -1,7 +1,7 @@
 #ifndef __ITDDRV_H__
 #define __ITDDRV_H__
 
-struct icdtcp3_itd_data
+struct itddev_data
 {
   int gpio_in;
   int gpio_led;
