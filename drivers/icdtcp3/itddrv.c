@@ -7,6 +7,8 @@
 #include <linux/cdev.h>
 #include <linux/uaccess.h>
 #include <linux/delay.h>
+#include <linux/slab.h>
+#include <linux/sched.h>
 
 #include <linux/itddrv.h>
 #include "icdcommon.h"
@@ -456,6 +458,12 @@ static int itddev_init(struct itddev *itd, struct platform_device *pdev, dev_t d
 
   itd->pdev = pdev;
 
+  INIT_LIST_HEAD(&itd->queue);
+  atomic_set(&itd->queue_count, 0);
+  init_waitqueue_head(&itd->queue_ready);
+  spin_lock_init(&itd->spinlock);
+  tasklet_init(&itd->irq_tasklet, itddev_irq_tasklet_fn, (unsigned long)itd);
+
   itd->iobuf = kmalloc(ITDDEV_IOBUF_SIZE, GFP_KERNEL);
   CHECK_PTR(itd->iobuf, err, fail, "Memory allocation of iobuf failed");
   itd->iobuf[0] = 0;
@@ -479,12 +487,6 @@ static int itddev_init(struct itddev *itd, struct platform_device *pdev, dev_t d
   itd->engage_delay_usec = 2000000;
   itd->release_delay_usec = 2000000;
   itd->active_low = 0;
-
-  INIT_LIST_HEAD(&itd->queue);
-  atomic_set(&itd->queue_count, 0);
-  init_waitqueue_head(&itd->queue_ready);
-  spin_lock_init(&itd->spinlock);
-  tasklet_init(&itd->irq_tasklet, itddev_irq_tasklet_fn, (unsigned long)itd);
 
   init_timer(&itd->timer);
   itd->timer.data = (unsigned long)itd;
@@ -611,7 +613,7 @@ static int __devexit itddrv_remove(struct platform_device *pdev)
 static struct itddrv itd_driver = {
   .gpio_test = 0,
   .test_time_usec = 1000000,
-  .spinlock = SPIN_LOCK_UNLOCKED,
+  .spinlock = __SPIN_LOCK_UNLOCKED(itd_driver.spinlock),
   .driver = {
     .probe = itddrv_probe,
     .remove = __devexit_p(itddrv_remove),
@@ -751,6 +753,6 @@ module_init(itddrv_init);
 module_exit(itddrv_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Tomasz Rozensztrauch <t.rozensztrauch@gmail.com>")
+MODULE_AUTHOR("Tomasz Rozensztrauch <t.rozensztrauch@gmail.com>");
 MODULE_DESCRIPTION("Itd (input transition detector) device driver");
 

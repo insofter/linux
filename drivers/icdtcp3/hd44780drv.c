@@ -6,6 +6,7 @@
 #include <linux/fs.h>
 #include <linux/cdev.h>
 #include <linux/uaccess.h>
+#include <linux/slab.h>
 
 #include <linux/hd44780drv.h>
 #include "icdcommon.h"
@@ -269,6 +270,6 @@ module_init(hd44780drv_init);
 module_exit(hd44780drv_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Tomasz Rozensztrauch <t.rozensztrauch@gmail.com>")
+MODULE_AUTHOR("Tomasz Rozensztrauch <t.rozensztrauch@gmail.com>");
 MODULE_DESCRIPTION("HD44780-compatible lcd device driver");
 

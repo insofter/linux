@@ -1361,8 +1361,6 @@ source "drivers/pci/Kconfig"
 
 source "drivers/pcmcia/Kconfig"
 
-source "drivers/icdtcp3/Kconfig"
-
 endmenu
 
 menu "Kernel Features"
