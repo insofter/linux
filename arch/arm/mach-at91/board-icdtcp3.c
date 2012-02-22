@@ -128,25 +128,25 @@ static struct mtd_partition __initdata ek_nand_partition[] = {
 	{
 		.name	= "bootstrap",
 		.offset	= 0,
-		.size	= SZ_256K,
+		.size	= SZ_512K,
 	},
 	{
 		.name	= "u-boot",
 		.offset	= MTDPART_OFS_NXTBLK,
-		.size	= SZ_256K,
+		.size	= SZ_512K + SZ_1M,
 	},
 	{
-		.name	= "u-boot environment",
+		.name	= "u-boot-env",
 		.offset	= MTDPART_OFS_NXTBLK,
-		.size	= SZ_1M + SZ_512K,
+		.size	= SZ_2M,
 	},
 	{
-		.name	= "kernel",
+		.name	= "system",
 		.offset	= MTDPART_OFS_NXTBLK,
-		.size	= SZ_8M - SZ_2M,
+		.size	= SZ_128M,
 	},
 	{
-		.name	= "filesystems",
+		.name	= "data",
 		.offset	= MTDPART_OFS_NXTBLK,
 		.size	= MTDPART_SIZ_FULL,
 	},
