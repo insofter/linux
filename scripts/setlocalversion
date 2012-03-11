@@ -150,6 +150,10 @@ else
 	exit 1
 fi
 
+# version from tag; tag is expected to be in form <ver>+<tag-ver>,
+# e.g. v3.1.4+icdtcp3-0.0
+tag=`git describe --abbrev=0 | sed -e 's/^[^+]*+\(.*\)$/-\1/'`
+
 # localversion* files in the build and source directory
 res="$(collect_files localversion*)"
 if test ! "$srctree" -ef .; then
@@ -157,7 +161,7 @@ if test ! "$srctree" -ef .; then
 fi
 
 # CONFIG_LOCALVERSION and LOCALVERSION (if set)
-res="${res}${CONFIG_LOCALVERSION}${LOCALVERSION}"
+res="${tag}${res}${CONFIG_LOCALVERSION}${LOCALVERSION}"
 
 # scm version string if not at a tagged commit
 if test "$CONFIG_LOCALVERSION_AUTO" = "y"; then
