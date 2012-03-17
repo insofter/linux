@@ -91,7 +91,7 @@ chmod a+x ${export_dir}/scripts/setlocalversion
 
 info "Creating archive linux-${version}.tar.bz2..."
 cd "${temp_dir}"
-test $? -eq 0 || error "Changing pwd to '${build_dir}' failed"
+test $? -eq 0 || error "Changing directory to '${build_dir}' failed"
 tar -cjf "${build_dir}/linux-${version}.tar.bz2" "linux-${version}"
 test $? -eq 0 || \
   error "Creating bzipped tar archive '${build_dir}/linux-${version}.tar.bz2' failed"
