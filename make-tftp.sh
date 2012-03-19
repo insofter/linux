@@ -47,7 +47,7 @@ error()
 }
 
 program_name=`basename "$0"`
-version=`git describe | sed -e 's/^v//' -e 's/+/-/g'`
+version=`git describe --dirty | sed -e 's/^v//' -e 's/+/-/g'`
 
 if [ "x${ICDTCP3_TFTP_DIR}" != "x" ]; then
   output_dir="${ICDTCP3_TFTP_DIR}"
@@ -58,12 +58,13 @@ fi
 build_dir=`pwd`
 
 options=`getopt -o o:O:hv --long output-dir:,build-dir:,help,version -- "$@"`
+test $? -eq 0 || error "Parsing parameters failed"
 eval set -- "$options"
 while true ; do
   case "$1" in
-    -o|--output-dir) output_dir=`cd "$2" && pwd`;
+    -o|--output-dir) output_dir=`eval cd "$2" && pwd`;
        test $? -eq 0 || error "Invalid output directory specified"; shift 2 ;;
-    -O|--build-dir) build_dir=`cd "$2" && pwd`;
+    -O|--build-dir) build_dir=`eval cd "$2" && pwd`;
        test $? -eq 0 || error "Invalid build directory specified"; shift 2 ;;
     -h|--help) print_usage; exit 0 ;;
     -v|--version) print_version; exit 0 ;;

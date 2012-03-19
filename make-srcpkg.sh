@@ -49,10 +49,11 @@ tag=`git describe --abbrev=0 | sed -e 's/^[^+]*+\(.*\)$/-\1/'`
 output_dir=`pwd`
 
 options=`getopt -o o:hv --long output-dir:,help,version -- "$@"`
+test $? -eq 0 || error "Parsing parameters failed"
 eval set -- "$options"
 while true ; do
   case "$1" in
-    -o|--output-dir) output_dir=`cd "$2" && pwd`;
+    -o|--output-dir) output_dir=`eval cd "$2" && pwd`;
        test $? -eq 0 || error "Invalid output directory specified"; shift 2 ;;
     -h|--help) print_usage; exit 0 ;;
     -v|--version) print_version; exit 0 ;;
@@ -73,7 +74,7 @@ info "Preparing source directory tree..."
 rsync -a --exclude=.git* --exclude=/*sh --exclude=/CMakeLists.txt ./ "${export_dir}"
 test $? -eq 0 || error "Copying package files failed"
 
-info "Updating 'scripts/setlocalversion script..."
+info "Updating 'scripts/setlocalversion'..."
 cat scripts/setlocalversion | sed -e 's/^local_tag=.*$/local_tag="'"${tag}"'"/' \
   -e '/sed:package {/,/sed:package }/ d' > ${export_dir}/scripts/setlocalversion
 chmod a+x ${export_dir}/scripts/setlocalversion
