@@ -150,15 +150,24 @@ else
 	exit 1
 fi
 
-#sed:package {
 scm_local_tag()
 {
-  # version from tag; tag is expected to be in form <ver>+<tag-ver>,
-  # e.g. v3.1.4+icdtcp3-0.0
+  local version
+
+  # git tag is expected to be in the following format:
+  # v<base-ver>-icdtcp3-<ver> e.g. v3.1.4-icdtcp3-1.14
   cd "${srctree}"
-  printf "%s" `git describe --abbrev=0 | sed -e 's/^[^+]*+\(.*\)$/-\1/'`
+  version=`git describe --abbrev=0 2>/dev/null | grep -oe "icdtcp3-.*"`
+  if [ "x${version}" = "x" ]; then
+    if [ -f "./VERSION" ]; then
+      version=`cat ./VERSION 2>/dev/null | grep -oe "icdtcp3-.*"`
+    else
+      version="icdtcp3-?"
+    fi
+  fi
+
+  printf "%s" "-${version}"
 }
-#sed:package }
 
 local_tag=$(scm_local_tag)
 
