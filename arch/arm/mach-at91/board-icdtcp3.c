@@ -228,14 +228,14 @@ static struct gpio_keys_button ek_buttons[] = {
                 .wakeup         = 1,
         },
         {
-                .gpio           = AT91_PIN_PA30,
+                .gpio           = AT91_PIN_PB30,
                 .code           = BTN_4,
                 .desc           = "Button4",
                 .active_low     = 1,
                 .wakeup         = 1,
         },
         {
-                .gpio           = AT91_PIN_PA31,
+                .gpio           = AT91_PIN_PB31,
                 .code           = BTN_5,
                 .desc           = "Button5",
                 .active_low     = 1,
