@@ -345,7 +345,7 @@ static void icdtcp3_add_device_itds(void)
   int i;
 
   // setup test gpio
-  at91_set_gpio_output(AT91_PIN_PC8, 0);
+  at91_set_gpio_output(AT91_PIN_PC8, 1);
 
   for (i = 0; i < ARRAY_SIZE(itd_device); i++)
   {
