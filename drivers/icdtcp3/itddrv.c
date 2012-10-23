@@ -214,12 +214,13 @@ static ssize_t itddev_active_low_store(struct device *dev,
 
   err = strict_strtol(buf, 0, &value);
   CHECK_ERR(err, fail, "Invalid value for active_low");
-  CHECK(value == 0 || value == 1, err, -EINVAL, fail,"Invalid value for trigger"); 
+  CHECK(value == 0 || value == 1, err, -EINVAL, fail,"Invalid value for active_low"); 
   spin_lock_irqsave(&itd->spinlock, flags);
   itd->active_low = value ? 1 : 0;
   // After changinf active_low attribute reset the device int uninitialized state
   itd->state = ITDDEV_UNINITIALIZED;
-  __itddev_handle_irq(itd);
+  itd->queue.reading_head = 0;
+  itd->queue.writting_head = 0;
   spin_unlock_irqrestore(&itd->spinlock, flags);
   return count;
 
@@ -341,7 +342,7 @@ fail:
   return err;
 }
 
-static ssize_t itddev_trigger_store(struct device *dev,
+static ssize_t itddev_restart_store(struct device *dev,
   struct device_attribute *attr, const char *buf, size_t count)
 {
   int err = 0;
@@ -351,10 +352,12 @@ static ssize_t itddev_trigger_store(struct device *dev,
   unsigned long flags;
 
   err = strict_strtol(buf, 0, &value);
-  CHECK_ERR(err, fail, "Invalid value for trigger");
-  CHECK(value == 1, err, -EINVAL, fail,"Invalid value for trigger"); 
+  CHECK_ERR(err, fail, "Invalid value for restart");
+  CHECK(value == 1, err, -EINVAL, fail,"Invalid value for restart"); 
   spin_lock_irqsave(&itd->spinlock, flags);
   itd->state = ITDDEV_UNINITIALIZED;
+  itd->queue.reading_head = 0;
+  itd->queue.writting_head = 0;
   __itddev_handle_irq(itd);
   spin_unlock_irqrestore(&itd->spinlock, flags);
   return count;
@@ -416,7 +419,7 @@ static DEVICE_ATTR(queue_len, S_IRUGO | S_IWUSR,
   itddev_queue_len_show, itddev_queue_len_store);
 static DEVICE_ATTR(led_ctrl, S_IRUGO | S_IWUSR,
   itddev_led_ctrl_show, itddev_led_ctrl_store);
-static DEVICE_ATTR(trigger, S_IRUGO | S_IWUSR, NULL, itddev_trigger_store);
+static DEVICE_ATTR(restart, S_IRUGO | S_IWUSR, NULL, itddev_restart_store);
 static DEVICE_ATTR(test, S_IRUGO, itddev_test_show, NULL);
 
 static int __itddev_create_dev_attr(struct itddev *itd)
@@ -427,7 +430,7 @@ static int __itddev_create_dev_attr(struct itddev *itd)
   int attr_active_low_created = 0;
   int attr_queue_len_created = 0;
   int attr_led_ctrl_created = 0;
-  int attr_trigger_created = 0;
+  int attr_restart_created = 0;
   int attr_test_created = 0;
 
   err = device_create_file(&itd->pdev->dev, &dev_attr_engage_delay_usec);
@@ -450,9 +453,9 @@ static int __itddev_create_dev_attr(struct itddev *itd)
   CHECK_ERR(err, fail, "Failed to register device attribute 'led_ctrl'");
   attr_led_ctrl_created = 1;
 
-  err = device_create_file(&itd->pdev->dev, &dev_attr_trigger);
-  CHECK_ERR(err, fail, "Failed to register device attribute 'trigger'");
-  attr_trigger_created = 1;
+  err = device_create_file(&itd->pdev->dev, &dev_attr_restart);
+  CHECK_ERR(err, fail, "Failed to register device attribute 'restart'");
+  attr_restart_created = 1;
 
   err = device_create_file(&itd->pdev->dev, &dev_attr_test);
   CHECK_ERR(err, fail, "Failed to register device attribute 'test'");
@@ -463,8 +466,8 @@ static int __itddev_create_dev_attr(struct itddev *itd)
 fail:
   if (attr_test_created)
     device_remove_file(&itd->pdev->dev, &dev_attr_test);
-  if (attr_trigger_created)
-    device_remove_file(&itd->pdev->dev, &dev_attr_trigger);
+  if (attr_restart_created)
+    device_remove_file(&itd->pdev->dev, &dev_attr_restart);
   if (attr_led_ctrl_created)
     device_remove_file(&itd->pdev->dev, &dev_attr_led_ctrl);
   if (attr_queue_len_created)
@@ -481,7 +484,7 @@ fail:
 static void __itddev_remove_dev_attr(struct itddev *itd)
 {
   device_remove_file(&itd->pdev->dev, &dev_attr_test);
-  device_remove_file(&itd->pdev->dev, &dev_attr_trigger);
+  device_remove_file(&itd->pdev->dev, &dev_attr_restart);
   device_remove_file(&itd->pdev->dev, &dev_attr_led_ctrl);
   device_remove_file(&itd->pdev->dev, &dev_attr_queue_len);
   device_remove_file(&itd->pdev->dev, &dev_attr_active_low);
@@ -751,7 +754,6 @@ static int itddev_init(struct itddev *itd, struct platform_device *pdev, dev_t d
     pdev->name, pdev->id);
 
   __itddev_set_led_on(itd);
-  __itddev_handle_irq(itd);
 
   spin_unlock_irqrestore(&itd->spinlock, flags);
   return 0;
