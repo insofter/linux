@@ -280,26 +280,26 @@ static void __init ek_add_device_buttons(void) {}
 
 static struct itddev_data itd_data[] = {
   {
-    .gpio_in = AT91_PIN_PB6,
-    .gpio_led = AT91_PIN_PB16,
+    .gpio_in = AT91_PIN_PB8,
+    .gpio_led = AT91_PIN_PB19,
     .gpio_test = AT91_PIN_PC8,
     .descr = "itd0"
   },
   {
-    .gpio_in = AT91_PIN_PB7,
-    .gpio_led = AT91_PIN_PB17,
+    .gpio_in = AT91_PIN_PB9,
+    .gpio_led = AT91_PIN_PB18,
     .gpio_test = AT91_PIN_PC8,
     .descr = "itd1"
   },
   {
-    .gpio_in = AT91_PIN_PB8,
-    .gpio_led = AT91_PIN_PB18,
+    .gpio_in = AT91_PIN_PB6,
+    .gpio_led = AT91_PIN_PB17,
     .gpio_test = AT91_PIN_PC8,
     .descr = "itd2"
   },
   {
-    .gpio_in = AT91_PIN_PB9,
-    .gpio_led = AT91_PIN_PB19,
+    .gpio_in = AT91_PIN_PB7,
+    .gpio_led = AT91_PIN_PB16,
     .gpio_test = AT91_PIN_PC8,
     .descr = "itd3"
   }
