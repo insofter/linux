@@ -71,6 +71,7 @@ struct itddev
   long release_delay_usec;
   int active_low;
   int led_ctrl;
+  int enabled;
 };
 
 
@@ -84,6 +85,16 @@ static inline void  __itddev_set_led_off(struct itddev *itd)
 {
   struct itddev_data *device_data = itd->pdev->dev.platform_data;
   gpio_set_value(device_data->gpio_led, 1);
+}
+
+static inline void __itddev_enable(struct itddev *itd)
+{
+  itd->enabled = 1;
+}
+
+static inline void __itddev_disable(struct itddev *itd)
+{
+  itd->enabled = 0;
 }
 
 static void __itddev_handle_irq(struct itddev *itd);
@@ -111,6 +122,8 @@ static inline void __itddrv_set_test_off(struct itddrv *itd_driver)
 {
   gpio_set_value(itd_driver->gpio_test, 1);
 }
+
+static int itddrv_run_test(struct itddrv *itd_driver, int test[ITDDRV_NUM_OF_DEVS]);
 
 //------------------------------------------------------------------------------
 
@@ -376,34 +389,17 @@ static ssize_t itddev_test_show(struct device *dev,
   struct itddrv *itd_driver = container_of(driver,
     struct itddrv, driver);
   struct itddev *itd = platform_get_drvdata(pdev);
-  long value = 0;
-  int test = 0;
-  unsigned long flags;
+  int test[ITDDRV_NUM_OF_DEVS] = { 0 };
+  int i;
 
-  CHECK(itd_driver->gpio_test > 0, err, -EINVAL, fail, "Test gpio pin not set");
+  err = itddrv_run_test(itd_driver, test);
+  CHECK_ERR(err, fail, "Running test failed");
 
-  spin_lock_bh(&itd_driver->spinlock);
+  for (i = 0; i < ITDDRV_NUM_OF_DEVS; i++)
+    if (itd_driver->itd[i] == itd)
+      return sprintf(buf, "%i\n", test[i]);
 
-  spin_lock_irqsave(&itd->spinlock, flags);
-  value = __itddev_read_value(itd);
-  spin_unlock_irqrestore(&itd->spinlock, flags);
-  if (value == ITDDEV_BLOCKED)
-    test += 1;
-
-  __itddrv_set_test_on(itd_driver);
-  __itddrv_test_delay(itd_driver);
-
-  spin_lock_irqsave(&itd->spinlock, flags);
-  value = __itddev_read_value(itd);
-  spin_unlock_irqrestore(&itd->spinlock, flags);
-  if (value == ITDDEV_CLEAR)
-    test += 2;
-
-  __itddrv_set_test_off(itd_driver);
-
-  spin_unlock_bh(&itd_driver->spinlock);
-
-  return sprintf(buf, "%i\n", test);
+  return 0;
 
 fail:
   return err;
@@ -586,7 +582,8 @@ static irqreturn_t itddev_irq_handler_fn(int irq, void *dev)
   unsigned long flags;
 
   spin_lock_irqsave(&itd->spinlock, flags);
-  __itddev_handle_irq(itd);
+  if (itd->enabled)
+    __itddev_handle_irq(itd);
   spin_unlock_irqrestore(&itd->spinlock, flags);
   return IRQ_HANDLED;
 }
@@ -731,6 +728,7 @@ static int itddev_init(struct itddev *itd, struct platform_device *pdev, dev_t d
   itd->release_delay_usec = 0;
   itd->active_low = 0;
   itd->led_ctrl = 0;
+  itd->enabled = 1;
 
   init_timer(&itd->timer);
   itd->timer.data = (unsigned long)itd;
@@ -905,15 +903,11 @@ fail:
   return err;
 }
 
-static ssize_t itddrv_test_show(struct device_driver *driver, char *buf)
+static int itddrv_run_test(struct itddrv *itd_driver, int test[ITDDRV_NUM_OF_DEVS])
 {
   int err = 0;
-  struct platform_driver *pdrv = container_of(driver, struct platform_driver, driver);
-  struct itddrv *itd_driver = container_of(pdrv, struct itddrv, driver);
   long value = 0;
-  int test[ITDDRV_NUM_OF_DEVS] = { 0 };
   int i = 0;
-  int count = 0;
   unsigned long flags;
 
   CHECK(itd_driver->gpio_test > 0, err, -EINVAL, fail, "Test gpio pin not set");
@@ -925,6 +919,7 @@ static ssize_t itddrv_test_show(struct device_driver *driver, char *buf)
     if (itd_driver->itd[i] == NULL)
       continue;
     spin_lock_irqsave(&itd_driver->itd[i]->spinlock, flags);
+    __itddev_disable(itd_driver->itd[i]);
     value = __itddev_read_value(itd_driver->itd[i]);
     spin_unlock_irqrestore(&itd_driver->itd[i]->spinlock, flags);
     if (value == ITDDEV_BLOCKED)
@@ -947,7 +942,33 @@ static ssize_t itddrv_test_show(struct device_driver *driver, char *buf)
 
   __itddrv_set_test_off(itd_driver);
 
+  for (i = 0; i < ITDDRV_NUM_OF_DEVS; i++)
+  {
+    if (itd_driver->itd[i] == NULL)
+      continue;
+    spin_lock_irqsave(&itd_driver->itd[i]->spinlock, flags);
+    __itddev_enable(itd_driver->itd[i]);
+    __itddev_handle_irq(itd_driver->itd[i]);
+    spin_unlock_irqrestore(&itd_driver->itd[i]->spinlock, flags);
+  }
+
   spin_unlock_bh(&itd_driver->spinlock);
+
+fail:
+  return err;
+}
+
+static ssize_t itddrv_test_show(struct device_driver *driver, char *buf)
+{
+  int err = 0;
+  struct platform_driver *pdrv = container_of(driver, struct platform_driver, driver);
+  struct itddrv *itd_driver = container_of(pdrv, struct itddrv, driver);
+  int test[ITDDRV_NUM_OF_DEVS] = { 0 };
+  int i = 0;
+  int count = 0;
+
+  err = itddrv_run_test(itd_driver, test);
+  CHECK_ERR(err, fail, "Running test failed");
 
   for (i = 0; i < ITDDRV_NUM_OF_DEVS - 1; i++)
     count += sprintf(buf + count, "%i ", test[i]);
