@@ -282,25 +282,25 @@ static struct itddev_data itd_data[] = {
   {
     .gpio_in = AT91_PIN_PB8,
     .gpio_led = AT91_PIN_PB19,
-    .gpio_test = AT91_PIN_PC8,
+    .gpio_test = AT91_PIN_PB29,
     .descr = "itd0"
   },
   {
     .gpio_in = AT91_PIN_PB9,
     .gpio_led = AT91_PIN_PB18,
-    .gpio_test = AT91_PIN_PC8,
+    .gpio_test = AT91_PIN_PB29,
     .descr = "itd1"
   },
   {
     .gpio_in = AT91_PIN_PB6,
     .gpio_led = AT91_PIN_PB17,
-    .gpio_test = AT91_PIN_PC8,
+    .gpio_test = AT91_PIN_PB29,
     .descr = "itd2"
   },
   {
     .gpio_in = AT91_PIN_PB7,
     .gpio_led = AT91_PIN_PB16,
-    .gpio_test = AT91_PIN_PC8,
+    .gpio_test = AT91_PIN_PB29,
     .descr = "itd3"
   }
 };
@@ -345,7 +345,7 @@ static void icdtcp3_add_device_itds(void)
   int i;
 
   // setup test gpio
-  at91_set_gpio_output(AT91_PIN_PC8, 1);
+  at91_set_gpio_output(AT91_PIN_PB29, 1);
 
   for (i = 0; i < ARRAY_SIZE(itd_device); i++)
   {
