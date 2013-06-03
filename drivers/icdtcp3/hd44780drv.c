@@ -27,11 +27,14 @@ static ssize_t hd44780dev_cdev_write(struct file *filp,
 static int hd44780dev_cdev_release(struct inode *inode, struct file *filp);
 static ssize_t hd44780dev_cmd_store(struct device *dev,
   struct device_attribute *attr, const char *buf, size_t count);
+static ssize_t hd44780dev_backlight_store(struct device *dev,
+  struct device_attribute *attr, const char *buf, size_t count);
 static void __hd44780dev_write_4bit(struct hd44780dev *lcd, int rs, unsigned char d);
 static void __hd44780dev_write_char(struct hd44780dev *lcd, unsigned char d);
 static void __hd44780dev_write_cmd(struct hd44780dev *lcd, unsigned char d);
 
 static DEVICE_ATTR(cmd, S_IWUSR, NULL, hd44780dev_cmd_store);
+static DEVICE_ATTR(backlight, S_IWUSR, NULL, hd44780dev_backlight_store);
 
 static const struct file_operations hd44780dev_cdev_operations = {
   .owner = THIS_MODULE,
@@ -81,6 +84,9 @@ static int hd44780dev_init(struct hd44780dev *lcd, struct platform_device *pdev,
   err = device_create_file(&pdev->dev, &dev_attr_cmd);
   CHECK_ERR(err, fail_free_cdev, "Failed to register device attribute 'cmd'");
 
+  err = device_create_file(&pdev->dev, &dev_attr_backlight);
+  CHECK_ERR(err, fail_free_cmd, "Failed to register device attribute 'backlight'");
+
   // Basic init sequence 
   __hd44780dev_write_4bit(lcd, 0, 0x3);
   mdelay(5); 
@@ -105,6 +111,9 @@ static int hd44780dev_init(struct hd44780dev *lcd, struct platform_device *pdev,
   udelay(50);
   return 0; 
 
+fail_free_cmd:
+  device_remove_file(&lcd->pdev->dev, &dev_attr_cmd);
+
 fail_free_cdev:
   cdev_del(&lcd->cdev);
 
@@ -114,6 +123,7 @@ fail:
 
 static void hd44780dev_free(struct hd44780dev *lcd)
 {
+  device_remove_file(&lcd->pdev->dev, &dev_attr_backlight);
   device_remove_file(&lcd->pdev->dev, &dev_attr_cmd);
 
   cdev_del(&lcd->cdev);
@@ -168,6 +178,28 @@ static ssize_t hd44780dev_cmd_store(struct device *dev,
     mdelay(5);
   else
     udelay(100);
+  spin_unlock(&lcd->spinlock);
+  return count;
+
+fail:
+  spin_unlock(&lcd->spinlock);
+  return err;
+}
+
+static ssize_t hd44780dev_backlight_store(struct device *dev,
+  struct device_attribute *attr, const char *buf, size_t count)
+{
+  int err = 0;
+  struct platform_device *pdev = container_of(dev, struct platform_device, dev);
+  struct hd44780dev *lcd = platform_get_drvdata(pdev);
+  struct hd44780dev_data *device_data = lcd->pdev->dev.platform_data;
+  long value = 0;
+
+  spin_lock(&lcd->spinlock);
+  err = strict_strtol(buf, 0, &value);
+  CHECK_ERR(err, fail, "Invalid backlight value");
+  CHECK(value == 0 || value == 1, err, -EINVAL, fail, "Invalid backlight value");
+  gpio_set_value(device_data->gpio_backlight, value);
   spin_unlock(&lcd->spinlock);
   return count;
 

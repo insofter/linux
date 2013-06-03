@@ -366,6 +366,7 @@ static struct hd44780dev_data lcd_data = {
   .gpio_d5 = AT91_PIN_PB23,
   .gpio_d6 = AT91_PIN_PB24,
   .gpio_d7 = AT91_PIN_PB25,
+  .gpio_backlight = AT91_PIN_PB28,
   .descr = "lcd"
 };
 
@@ -386,6 +387,7 @@ static void icdtcp3_add_device_lcd(void)
   at91_set_gpio_output(AT91_PIN_PB23, 0);
   at91_set_gpio_output(AT91_PIN_PB24, 0);
   at91_set_gpio_output(AT91_PIN_PB25, 0);
+  at91_set_gpio_output(AT91_PIN_PB28, 1);
 
   platform_device_register(&lcd_device);
 }
